@@ -31,7 +31,7 @@ eq() { # eq <label> <actual> <expected>
     fi
 }
 
-for s in ctx git-snap log-triage; do
+for s in ctx git-snap log-triage logscan; do
     if [ ! -x "./$s" ]; then
         printf 'error: ./%s missing or not executable\n' "$s" >&2
         exit 2
@@ -234,6 +234,27 @@ awk 'BEGIN { for (i = 1; i <= 100000; i++) printf "{\"i\":%d}\n", i }' > "$tmp/b
 out=$(./log-triage "$tmp/bulk/big.jsonl" --fields i)
 has 'log-triage: bulk jsonl records' "$out" 'records: 100000'
 has 'log-triage: bulk jsonl field block' "$out" '## field i'
+
+echo '=== logscan ==='
+mkdir -p "$tmp/ls/sub"
+printf '%s\n' '{"type":"message","message":{"role":"user","text":"hi"}}' '{"type":"message","message":{"role":"assistant","text":"a1"}}' 'not json' '{"type":"custom","n":3}' > "$tmp/ls/a.jsonl"
+printf '%s\n' '{"type":"message","message":{"role":"assistant","text":"a2"}}' > "$tmp/ls/sub/b.jsonl"
+out=$(./logscan "$tmp/ls"); rc=$?
+eq 'logscan: exit 0' "$rc" 0
+has 'logscan: summary' "$out" 'files 2, lines 5, unparsable 1, kept 4'
+out=$(./logscan "$tmp/ls" --where message.role=assistant --fields message.text)
+has 'logscan: where kept' "$out" 'kept 2'
+has 'logscan: dotted field' "$out" 'message.text=a2'
+hasnt 'logscan: where filters user' "$out" 'message.text=hi'
+out=$(./logscan "$tmp/ls" --count type)
+has 'logscan: count' "$out" '      3  message'
+out=$(./logscan "$tmp/ls/*.jsonl" --grep custom --fields n)
+has 'logscan: glob+grep' "$out" 'kept 1'
+has 'logscan: number field' "$out" 'n=3'
+out=$(./logscan "$tmp/ls" --last 1 --fields type)
+has 'logscan: last 1' "$out" '## last 1 kept records'
+out=$(./logscan "$tmp/nothing" 2>&1); rc=$?
+eq 'logscan: no match exit 2' "$rc" 2
 
 echo
 if [ "$fail" -eq 0 ]; then

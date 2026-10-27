@@ -8,6 +8,7 @@ agent usually spends several round-trips on.
 | `bin/ctx <file>... [file:A-B]` | several `view_file` calls; prints files with line numbers, bounded |
 | `bin/git-snap [dir]` | `git status` / `branch` / `log` / ahead-behind reconnaissance |
 | `bin/log-triage <dir-or-glob> [--grep RE] [--fields a,b]` | `ls` → `head` → `python -c` log probing |
+| `bin/logscan <file|dir|glob>... [--where k=v] [--count k] [--fields a,b] [--grep RE]` | chains of `python3 -c` JSONL/transcript extraction one-liners |
 | `calc/ntg-calc 'x=...; y=...; x+y'` | exact arithmetic in one call (`make -C calc`) |
 | `python/wf.py` | call the tools above from one Python script |
 
@@ -21,5 +22,5 @@ input+cache tokens. Small sample, one model: directional evidence.
 
 ## Tests
 
-    bash tests/test.sh      # ctx, git-snap, log-triage (87 assertions)
+    bash tests/test.sh      # ctx, git-snap, log-triage (97 assertions)
     make -C calc test       # calculator (90 assertions)

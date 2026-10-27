@@ -32,3 +32,18 @@ def log_triage(target, grep=None, fields=None):
     if fields:
         args += ["--fields", fields]
     return _run("log-triage", *args)
+
+
+def logscan(*targets, where=None, fields=None, count=None, grep=None, last=None):
+    args = list(targets)
+    for kv in where or []:
+        args += ["--where", kv]
+    if fields:
+        args += ["--fields", fields]
+    if count:
+        args += ["--count", count]
+    if grep:
+        args += ["--grep", grep]
+    if last is not None:
+        args += ["--last", last]
+    return _run("logscan", *args)
