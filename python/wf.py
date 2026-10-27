@@ -47,3 +47,7 @@ def logscan(*targets, where=None, fields=None, count=None, grep=None, last=None)
     if last is not None:
         args += ["--last", last]
     return _run("logscan", *args)
+
+
+def gate_preflight(repo="."):
+    return _run("gate-preflight", repo)

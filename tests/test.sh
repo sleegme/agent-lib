@@ -31,7 +31,7 @@ eq() { # eq <label> <actual> <expected>
     fi
 }
 
-for s in ctx git-snap log-triage logscan; do
+for s in ctx git-snap log-triage logscan gate-preflight; do
     if [ ! -x "./$s" ]; then
         printf 'error: ./%s missing or not executable\n' "$s" >&2
         exit 2
@@ -255,6 +255,28 @@ out=$(./logscan "$tmp/ls" --last 1 --fields type)
 has 'logscan: last 1' "$out" '## last 1 kept records'
 out=$(./logscan "$tmp/nothing" 2>&1); rc=$?
 eq 'logscan: no match exit 2' "$rc" 2
+
+echo '=== gate-preflight ==='
+gp="$tmp/gp"; mkdir -p "$gp/plugin" "$gp/node_modules/x"
+printf '2.4.0\n' > "$gp/VERSION"
+printf '{"name":"p","version":"2.4.1"}' > "$gp/package.json"
+printf '{"version":"9.9.9"}' > "$gp/node_modules/x/package.json"
+printf '[project]\nname="p"\nversion = "2.4.0"\n' > "$gp/pyproject.toml"
+printf '{"version":"2.4.0"}' > "$gp/plugin/plugin.json"
+git -C "$gp" init -q -b main && git -C "$gp" add -A && git -C "$gp" commit -qm init && git -C "$gp" tag v2.4.0
+out=$(./gate-preflight "$gp"); rc=$?
+eq 'gate-preflight: mismatch exit 1' "$rc" 1
+has 'gate-preflight: mismatch verdict' "$out" 'MISMATCH 2.4.0 vs 2.4.1'
+has 'gate-preflight: package.json read' "$out" 'package.json'
+has 'gate-preflight: plugin manifest read' "$out" 'plugin/plugin.json'
+hasnt 'gate-preflight: node_modules skipped' "$out" '9.9.9'
+has 'gate-preflight: tag at head' "$out" 'tags    v2.4.0'
+has 'gate-preflight: branch' "$out" 'branch  main'
+printf '{"name":"p","version":"2.4.0"}' > "$gp/package.json"
+out=$(./gate-preflight "$gp"); rc=$?
+eq 'gate-preflight: match exit 0' "$rc" 0
+has 'gate-preflight: match verdict' "$out" 'MATCH 2.4.0'
+has 'gate-preflight: dirty count' "$out" 'dirty   1 file(s)'
 
 echo
 if [ "$fail" -eq 0 ]; then

@@ -9,6 +9,7 @@ agent usually spends several round-trips on.
 | `bin/git-snap [dir]` | `git status` / `branch` / `log` / ahead-behind reconnaissance |
 | `bin/log-triage <dir-or-glob> [--grep RE] [--fields a,b]` | `ls` → `head` → `python -c` log probing |
 | `bin/logscan <file|dir|glob>... [--where k=v] [--count k] [--fields a,b] [--grep RE]` | chains of `python3 -c` JSONL/transcript extraction one-liners |
+| `bin/gate-preflight [repo]` | `cat VERSION` / `jq .version` / `git log -1` / tag checks; prints every declared version, MATCH or MISMATCH (exit 1), and git state |
 | `calc/ntg-calc 'x=...; y=...; x+y'` | exact arithmetic in one call (`make -C calc`) |
 | `python/wf.py` | call the tools above from one Python script |
 
@@ -22,5 +23,5 @@ input+cache tokens. Small sample, one model: directional evidence.
 
 ## Tests
 
-    bash tests/test.sh      # ctx, git-snap, log-triage (97 assertions)
+    bash tests/test.sh      # ctx, git-snap, log-triage (107 assertions)
     make -C calc test       # calculator (90 assertions)

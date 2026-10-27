@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""gate-preflight -- one-call release/verification preflight for agents.
+
+usage: gate-preflight [repo-dir]
+
+Prints, for the repository (default: current directory):
+
+  ## versions   every version declared in VERSION, package.json, pyproject.toml,
+                Cargo.toml, setup.cfg and */plugin.json | */manifest.json
+                (max depth 2), then MATCH or MISMATCH
+  ## git        branch, HEAD, tags at HEAD, dirty file count, ahead/behind
+
+Exit status: 0 when all declared versions agree (or none found), 1 on mismatch,
+2 on usage errors.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+SKIP_DIRS = {".git", "node_modules", "target", "dist", "build", ".venv", "venv", "__pycache__"}
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def toml_version(textv, section):
+    current = None
+    for line in textv.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            current = s.strip("[]").strip()
+            continue
+        if current == section:
+            m = re.match(r'version\s*=\s*["\']([^"\']+)["\']', s)
+            if m:
+                return m.group(1)
+    return None
+
+
+def collect(root):
+    found = []
+
+    def add(rel, value):
+        if value:
+            found.append((rel, str(value).strip()))
+
+    for dirpath, dirnames, files in os.walk(root):
+        depth = os.path.relpath(dirpath, root).count(os.sep) + (dirpath != root)
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and depth < 2]
+        for name in files:
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, root)
+            if name == "VERSION":
+                lines = (read(path) or "").splitlines()
+                add(rel, lines[0] if lines else None)
+            elif name in ("package.json", "plugin.json", "manifest.json"):
+                try:
+                    data = json.loads(read(path) or "")
+                except ValueError:
+                    continue
+                if isinstance(data, dict):
+                    add(rel, data.get("version"))
+            elif name == "pyproject.toml":
+                t = read(path) or ""
+                add(rel, toml_version(t, "project") or toml_version(t, "tool.poetry"))
+            elif name == "Cargo.toml":
+                add(rel, toml_version(read(path) or "", "package"))
+            elif name == "setup.cfg":
+                add(rel, toml_version(read(path) or "", "metadata"))
+    return sorted(found)
+
+
+def git(root, *args):
+    p = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
+    return p.stdout.strip() if p.returncode == 0 else None
+
+
+def main(argv):
+    if len(argv) > 1 or (argv and argv[0].startswith("-")):
+        if argv and argv[0] in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        print("usage: gate-preflight [repo-dir]", file=sys.stderr)
+        return 2
+    root = os.path.abspath(argv[0] if argv else ".")
+    if not os.path.isdir(root):
+        print("gate-preflight: not a directory: " + root, file=sys.stderr)
+        return 2
+
+    versions = collect(root)
+    print("## versions")
+    for rel, v in versions:
+        print("%-40s %s" % (rel, v))
+    distinct = sorted({v for _, v in versions})
+    if not versions:
+        verdict, status = "NONE FOUND", 0
+    elif len(distinct) == 1:
+        verdict, status = "MATCH " + distinct[0], 0
+    else:
+        verdict, status = "MISMATCH " + " vs ".join(distinct), 1
+    print(verdict)
+
+    print("## git")
+    top = git(root, "rev-parse", "--show-toplevel")
+    if top is None:
+        print("not a git repository")
+        return status
+    branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    head = git(root, "log", "-1", "--format=%h %s")
+    tags = git(root, "tag", "--points-at", "HEAD") or ""
+    dirty = git(root, "status", "--porcelain") or ""
+    counts = git(root, "rev-list", "--left-right", "--count", "@{upstream}...HEAD")
+    print("branch  " + (branch or "?"))
+    print("head    " + (head or "(no commits)"))
+    print("tags    " + (", ".join(tags.split()) or "-"))
+    print("dirty   %d file(s)" % len([l for l in dirty.splitlines() if l]))
+    if counts:
+        behind, ahead = counts.split()
+        print("upstream ahead %s, behind %s" % (ahead, behind))
+    else:
+        print("upstream none")
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
