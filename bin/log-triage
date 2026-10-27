@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# log-triage -- find the newest log file(s) and summarize them for an agent.
+set -u
+
+MAX_LINES=20
+SMALL_FILE=40
+
+usage() {
+    cat <<'EOF'
+usage: log-triage <dir-or-glob> [--n K] [--grep REGEX] [--fields a,b,c]
+
+Snapshot the newest matching log file(s), newest first.
+
+<dir-or-glob>
+  a directory  every file under it matching *.log, *.log.*, *.jsonl or
+               *.jsonl.* (recursive)
+  a glob       contains * ? [ -- expanded by shell pattern rules
+  a file path  that file only
+
+For each selected file (at most K, default 1):
+
+  == path (SIZE bytes, mtime TIME) ==
+  ## content (N lines)        -- when the file has 40 lines or fewer
+  ## head (first 20 lines)    -- otherwise
+  ## tail (last 20 lines)
+  ## jsonl                    -- when the first line parses as a JSON object
+  records: N
+  ## field key.path           -- one block per requested --fields key,
+     <count>  <value>            top 10 values (dotted paths, list indexes ok)
+  ## grep REGEX               -- when --grep was given
+  matches: N
+
+Files are read with head/tail/streaming only; whole files are never loaded
+into memory.
+
+Options:
+  --n K            number of files to show, newest first (default 1)
+  --grep REGEX     extended regex; count matching lines per file
+  --fields a,b,c   JSONL keys to tally (dotted paths allowed)
+  -h, --help       show this help and exit
+
+Exit status: 0 when at least one file was shown, 1 when nothing matched,
+2 on usage error.
+EOF
+}
+
+usage_error() {
+    printf 'log-triage: %s\n' "$1" >&2
+    usage >&2
+    exit 2
+}
+
+n=1
+grep_pat=""
+fields=""
+target=""
+
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        -h|--help) usage; exit 0 ;;
+        --n) [ "$#" -ge 2 ] || usage_error '--n needs a value'; n=$2; shift 2 ;;
+        --n=*) n=${1#--n=}; shift ;;
+        --grep) [ "$#" -ge 2 ] || usage_error '--grep needs a value'; grep_pat=$2; shift 2 ;;
+        --grep=*) grep_pat=${1#--grep=}; shift ;;
+        --fields) [ "$#" -ge 2 ] || usage_error '--fields needs a value'; fields=$2; shift 2 ;;
+        --fields=*) fields=${1#--fields=}; shift ;;
+        -*) usage_error "unknown option: $1" ;;
+        *)
+            [ -z "$target" ] || usage_error "unexpected extra argument: $1"
+            target=$1
+            shift
+            ;;
+    esac
+done
+
+[ -n "$target" ] || usage_error 'missing <dir-or-glob>'
+
+case $n in
+    ''|*[!0-9]*) usage_error '--n must be a positive integer' ;;
+esac
+[ "$n" -ge 1 ] || usage_error '--n must be >= 1'
+
+if [ -n "$grep_pat" ]; then
+    err=$(printf 'x\n' | grep -E -- "$grep_pat" 2>&1 >/dev/null || true)
+    [ -z "$err" ] || usage_error "invalid --grep pattern: $err"
+fi
+
+# awk has no "--" end-of-options, so shield leading dashes ourselves.
+awpath() {
+    case $1 in
+        -*) printf './%s' "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+is_jsonl() {
+    first=$(head -n 1 -- "$1" 2>/dev/null || true)
+    case $first in
+        '{'*) ;;
+        *) return 1 ;;
+    esac
+    if command -v python3 >/dev/null 2>&1; then
+        printf '%s\n' "$first" | python3 -c 'import json, sys; json.loads(sys.stdin.read())' >/dev/null 2>&1
+    else
+        case $first in
+            *'}') return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+}
+
+analyze() {
+    f=$1
+    size=$(stat -c %s -- "$f" 2>/dev/null || printf '?')
+    mtime=$(date -r "$f" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf '?')
+    printf '== %s (%s bytes, mtime %s) ==\n' "$f" "$size" "$mtime"
+
+    small=$(awk -v cap="$SMALL_FILE" 'NR > cap { print "big"; exit } END { if (NR <= cap) print NR + 0 }' "$(awpath "$f")")
+
+    if [ "$small" = "big" ]; then
+        printf '## head (first %d lines)\n' "$MAX_LINES"
+        head -n "$MAX_LINES" -- "$f"
+        printf '## tail (last %d lines)\n' "$MAX_LINES"
+        tail -n "$MAX_LINES" -- "$f"
+    elif [ "$small" -eq 0 ]; then
+        printf '## content (empty file)\n'
+    elif [ "$small" -eq 1 ]; then
+        printf '## content (1 line)\n'
+        cat -- "$f"
+    else
+        printf '## content (%d lines)\n' "$small"
+        cat -- "$f"
+    fi
+
+    if is_jsonl "$f"; then
+        if command -v python3 >/dev/null 2>&1; then
+            python3 - "$f" "$fields" <<'PY'
+import collections
+import json
+import sys
+
+
+def render(v):
+    if isinstance(v, str):
+        s = v
+    else:
+        s = json.dumps(v, ensure_ascii=False, sort_keys=True)
+    s = s.replace("\n", "\\n").replace("\r", "\\r")
+    if len(s) > 80:
+        s = s[:77] + "..."
+    return s
+
+
+path = sys.argv[1]
+requested = [k for k in sys.argv[2].split(",") if k]
+counters = dict((k, collections.Counter()) for k in requested)
+records = 0
+invalid = 0
+
+with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    for raw in fh:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            invalid += 1
+            continue
+        records += 1
+        for key in requested:
+            cur = obj
+            found = True
+            for part in key.split("."):
+                if isinstance(cur, dict) and part in cur:
+                    cur = cur[part]
+                elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+                    cur = cur[int(part)]
+                else:
+                    found = False
+                    break
+            counters[key][render(cur) if found else "<missing>"] += 1
+
+print("## jsonl")
+print("records: %d" % records)
+if invalid:
+    print("invalid lines: %d" % invalid)
+
+for key in requested:
+    print("## field %s" % key)
+    top = sorted(counters[key].items(), key=lambda kv: (-kv[1], kv[0]))[:10]
+    if not top:
+        print("  (no values)")
+    else:
+        for value, cnt in top:
+            print("  %d  %s" % (cnt, value))
+PY
+        else
+            lines=$(wc -l < "$f")
+            printf '## jsonl\nrecords: %s (line count; python3 unavailable)\n' "$lines"
+        fi
+    elif [ -n "$fields" ]; then
+        printf '## jsonl\n(not JSONL; --fields ignored)\n'
+    fi
+
+    if [ -n "$grep_pat" ]; then
+        matches=$(grep -c -E -- "$grep_pat" "$f" 2>/dev/null || true)
+        printf '## grep %s\nmatches: %s\n' "$grep_pat" "${matches:-0}"
+    fi
+}
+
+cands=()
+if [ -d "$target" ]; then
+    while IFS= read -r f; do
+        [ -n "$f" ] && cands+=("$f")
+    done < <(find "$target" -type f \( -name '*.log' -o -name '*.log.*' -o -name '*.jsonl' -o -name '*.jsonl.*' \) 2>/dev/null)
+elif [ -f "$target" ]; then
+    cands=("$target")
+else
+    case $target in
+        *[\*\?\[]*)
+            while IFS= read -r f; do
+                [ -n "$f" ] && [ -f "$f" ] && cands+=("$f")
+            done < <(compgen -G "$target" 2>/dev/null || true)
+            ;;
+        *)
+            printf 'log-triage: %s: no such file or directory\n' "$target" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+sorted=()
+while IFS=$'\t' read -r _mtime f; do
+    [ -n "$f" ] && sorted+=("$f")
+done < <(
+    for f in "${cands[@]}"; do
+        printf '%s\t%s\n' "$(stat -c %Y -- "$f" 2>/dev/null || printf '0')" "$f"
+    done | sort -rn
+)
+
+if [ "${#sorted[@]}" -eq 0 ]; then
+    printf 'log-triage: no files matched: %s\n' "$target" >&2
+    exit 1
+fi
+
+show=$n
+[ "${#sorted[@]}" -lt "$n" ] && show=${#sorted[@]}
+printf 'matched %d file(s); showing %d newest\n' "${#sorted[@]}" "$show"
+
+i=0
+while [ "$i" -lt "$show" ]; do
+    analyze "${sorted[$i]}"
+    i=$((i + 1))
+done
+
+exit 0
