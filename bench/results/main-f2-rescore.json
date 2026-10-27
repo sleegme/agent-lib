@@ -1,0 +1,114 @@
+[
+  {
+    "arm": "A",
+    "rep": 0,
+    "strictFinalLine": false,
+    "factual": true,
+    "conversation": "18249793-d670-445e-9edd-360bc913f1d7"
+  },
+  {
+    "arm": "R",
+    "rep": 0,
+    "strictFinalLine": false,
+    "factual": true,
+    "conversation": "f11226d7-7788-42d6-932a-4fab9fe41416"
+  },
+  {
+    "arm": "T",
+    "rep": 0,
+    "strictFinalLine": true,
+    "factual": true,
+    "conversation": "89724bc6-4f12-4f1d-921a-915f7a6f9c99"
+  },
+  {
+    "arm": "RT",
+    "rep": 0,
+    "strictFinalLine": true,
+    "factual": true,
+    "conversation": "db64d80d-a7e1-4e60-9452-9e807f939656"
+  },
+  {
+    "arm": "A",
+    "rep": 1,
+    "strictFinalLine": false,
+    "factual": true,
+    "conversation": "e9c15278-51f1-4cf9-8fb4-658d3d81e1e6"
+  },
+  {
+    "arm": "R",
+    "rep": 1,
+    "strictFinalLine": false,
+    "factual": true,
+    "conversation": "838e31c2-d3a4-4427-a7c4-9869116c6724"
+  },
+  {
+    "arm": "T",
+    "rep": 1,
+    "strictFinalLine": true,
+    "factual": true,
+    "conversation": "6ac32c7b-62de-4349-a664-858ee4bd53b0"
+  },
+  {
+    "arm": "RT",
+    "rep": 1,
+    "strictFinalLine": true,
+    "factual": true,
+    "conversation": "4650cd73-ae6e-4895-86c0-45fe068d1b39"
+  },
+  {
+    "arm": "A",
+    "rep": 2,
+    "strictFinalLine": false,
+    "factual": true,
+    "conversation": "557c94c9-95e4-4a1e-a799-249b287b2e0b"
+  },
+  {
+    "arm": "R",
+    "rep": 2,
+    "strictFinalLine": false,
+    "factual": true,
+    "conversation": "8c2dd4cd-044f-4cff-b4c0-0940d3988886"
+  },
+  {
+    "arm": "T",
+    "rep": 2,
+    "strictFinalLine": true,
+    "factual": true,
+    "conversation": "9bf6abad-8ee4-455e-836a-7cc782432725"
+  },
+  {
+    "arm": "RT",
+    "rep": 2,
+    "strictFinalLine": true,
+    "factual": true,
+    "conversation": "ae92eacf-55d6-4e1f-99b2-40731b944fcc"
+  },
+  {
+    "arm": "A",
+    "rep": 3,
+    "strictFinalLine": false,
+    "factual": true,
+    "conversation": "f41c7c5b-dd94-4789-a716-df3162764dc5"
+  },
+  {
+    "arm": "R",
+    "rep": 3,
+    "strictFinalLine": false,
+    "factual": true,
+    "conversation": "fffdd90c-535f-490e-8b1a-b6156a47808b"
+  },
+  {
+    "arm": "T",
+    "rep": 3,
+    "strictFinalLine": true,
+    "factual": true,
+    "conversation": "a77c8b9a-5331-4fc8-8990-b63fca0ff9e8"
+  },
+  {
+    "arm": "RT",
+    "rep": 3,
+    "strictFinalLine": true,
+    "factual": true,
+    "conversation": "221e54e8-9ff8-48f1-8d3d-f1933cdab28e"
+  }
+]
