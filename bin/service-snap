@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# service-snap -- read-only systemd unit and recent journal snapshot.
+set -u
+
+usage() {
+    cat <<'EOF'
+usage: service-snap [--user] <unit> [--since TIME] [--lines N]
+
+Print ## unit (state, PID, exit status, activation time, restarts),
+## status (first 15 lines), and ## journal (last N lines). Never restart
+or modify the unit.
+
+Options:
+  --user        inspect the user manager and journal
+  --since TIME  journal start time (default: 10m ago); accepts journalctl times
+  --lines N     maximum journal lines (default: 40)
+  -h, --help    show this help and exit
+
+Requires systemctl and journalctl. Exit status: 0 on successful snapshot
+(including a failed unit), 1 on missing unit or failed lookup, 2 on usage error.
+EOF
+}
+
+user=()
+unit=""
+since=10m
+lines=40
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --user) user=(--user); shift ;;
+        --since|--lines)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                printf 'service-snap: %s requires an argument\n' "$1" >&2
+                exit 2
+            fi
+            if [ "$1" = --since ]; then since=$2; else lines=$2; fi
+            shift 2
+            ;;
+        -*) printf 'service-snap: unknown option: %s\n' "$1" >&2; exit 2 ;;
+        *)
+            if [ -n "$unit" ] || [ -z "$1" ]; then
+                printf 'service-snap: expected exactly one unit\n' >&2
+                exit 2
+            fi
+            unit=$1
+            shift
+            ;;
+    esac
+done
+if [ -z "$unit" ]; then
+    usage >&2
+    exit 2
+fi
+if ! [[ "$lines" =~ ^[0-9]+$ ]] || [ "$lines" -le 0 ]; then
+    printf 'service-snap: --lines must be a positive integer\n' >&2
+    exit 2
+fi
+for cmd in systemctl journalctl; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        printf 'service-snap: %s: not found\n' "$cmd" >&2
+        exit 1
+    fi
+done
+# Bare durations in this CLI mean "ago"; journalctl requires a minus sign.
+if [[ "$since" =~ ^[0-9]+[smhdw]$ ]]; then since="-$since"; fi
+if ! properties=$(systemctl "${user[@]}" show --property=LoadState,ActiveState,SubState,MainPID,ExecMainStatus,ActiveEnterTimestamp,NRestarts -- "$unit" 2>/dev/null); then
+    printf 'service-snap: %s: unit lookup failed\n' "$unit" >&2
+    exit 1
+fi
+if [[ "$properties" == *"LoadState=not-found"* ]]; then
+    printf 'service-snap: %s: unit not found\n' "$unit" >&2
+    exit 1
+fi
+printf '## unit\n%s\n' "$unit"
+while IFS= read -r property; do
+    case "$property" in
+        ActiveState=*|SubState=*|MainPID=*|ExecMainStatus=*|ActiveEnterTimestamp=*|NRestarts=*)
+            printf '%s\n' "$property"
+            ;;
+    esac
+done <<< "$properties"
+
+printf '## status\n'
+status_out=$(systemctl "${user[@]}" status --no-pager -- "$unit" 2>&1)
+rc=$?
+printf '%s\n' "$status_out" | head -n 15
+status=0
+case "$rc" in
+    0|3) ;;
+    *) printf 'service-snap: status lookup failed\n' >&2; status=1 ;;
+esac
+printf '## journal\n'
+if journal=$(journalctl "${user[@]}" -u "$unit" --since "$since" --no-pager --lines "$lines" 2>/dev/null); then
+    if [ -n "$journal" ]; then
+        printf '%s\n' "$journal" | tail -n "$lines"
+    else
+        printf 'none\n'
+    fi
+else
+    printf 'service-snap: journal lookup failed\n' >&2
+    status=1
+fi
+exit "$status"

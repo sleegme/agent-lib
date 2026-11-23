@@ -11,7 +11,6 @@ const BIN = LIB + '/bin';
 const BENCH = process.env.BENCH || HOME + '/work/agent-lib-bench';
 const MODEL = process.env.MODEL || 'gemini-3.8-flash-medium';
 const OUT = process.env.OUTF || BENCH + '/results.jsonl';
-const calcCheck = process.env.CALC_CHECK === '1';
 
 const toolCounts = id => {
   const p = HOME + '/.gemini/antigravity-cli/brain/' + id + '/.system_generated/logs/transcript.jsonl';
@@ -44,22 +43,13 @@ const T = [
   ['L2', 'In logs/events.jsonl, which value of the "type" field is most common, and how many times does it occur?', has('tool_call', '1522')],
   ['X1', 'Reply with the word PONG.', has('pong')],
 ];
-if (calcCheck) {
-  const integerAnswer = expected => answer =>
-    new RegExp(`\\b${expected}\\b`).test(answer.replaceAll(',', ''));
-  T.push(
-    ['N1', 'What is 48271 * 69621 * 17?', integerAnswer(57131479947)],
-    ['N5', 'How many seconds are there in 17 weeks, 3 days, 11 hours and 42 minutes?', integerAnswer(10582920)],
-  );
-}
 const tail = '\nDo not modify any files. End your reply with a final line: ANSWER: <answer>';
 const hint = '\nHelpful commands you can run with your command tool (each does in ONE call what usually takes several):\n' +
   `- ${BIN}/ctx <file>...  show several files with line numbers at once\n` +
   `- ${BIN}/git-snap  branch, ahead/behind, status, recent commits at once\n` +
   `- ${BIN}/gate-preflight  every declared version (VERSION, package.json, ...) with MATCH/MISMATCH, plus git state\n` +
   `- ${BIN}/log-triage <dir-or-glob> [--grep RE] [--fields key]  newest log summary, grep count, JSONL field counts\n` +
-  `- ${BIN}/logscan <file|dir|glob> [--where k=v] [--count key] [--fields a,b] [--grep RE]  filter/count/extract JSONL in one call` +
-  (calcCheck ? `\n- ${LIB}/calc/ntg-calc 'expression'  exact arithmetic in one call` : '');
+  `- ${BIN}/logscan <file|dir|glob> [--where k=v] [--count key] [--fields a,b] [--grep RE]  filter/count/extract JSONL in one call`;
 
 const arms = (process.env.ARMS || 'A,R,T,RT').split(',');
 const reps = +(process.env.REPS || 4);
@@ -79,7 +69,7 @@ for (let r = 0; r < reps; r++) for (const [id, q, chk] of T.filter(t => !ids || 
   const u = j.usage || {};
   const rec = { rep: r, id, arm, correct: !!ans && chk(ans),
     factualCorrect: !!ans && chk(id === 'F2' ? j.response || '' : ans),
-    study: calcCheck ? 'calculator-calibration' : 'main',
+    study: 'main',
     ans: ans.slice(0, 120), response: j.response || '', status: j.status, usage: j.usage,
     tokens: (u.input_tokens || 0) + (u.cache_read_tokens || 0) + (u.output_tokens || 0),
     tools: toolCounts(j.conversation_id), conv: j.conversation_id, ms: Date.now() - t0 };

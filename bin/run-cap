@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""run-cap -- keep command output on disk, not in the conversation."""
+import os
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from collections import deque
+from collections.abc import Iterator
+from datetime import datetime, timezone
+from types import FrameType
+from typing import BinaryIO
+
+
+def usage() -> None:
+    print("usage: run-cap [--tail N] [--dir PATH] [--] cmd args...")
+    print("Capture combined output; print results, five failure excerpts and a tail.")
+    print("Defaults: --tail 10; --dir $RUN_CAP_DIR or ./.cap/ (current directory).")
+    print("Excerpts include two following lines, joined with |; lines are clipped.")
+    print("Exit status: command status (128 + signal), 127 not found, 2 usage error.")
+
+
+def bad(message: str) -> None:
+    print("run-cap: " + message, file=sys.stderr)
+    sys.exit(2)
+
+
+def lines(log: BinaryIO) -> Iterator[str]:
+    """Scan fixed-size blocks; retain at most 4096 bytes of any physical line."""
+    prefix = b""
+    pending = False
+    while chunk := log.read(65536):
+        parts = chunk.split(b"\n")
+        for index, part in enumerate(parts):
+            prefix += part.replace(b"\0", b"")[: max(0, 4096 - len(prefix))]
+            if index < len(parts) - 1:
+                yield prefix.decode("utf-8", errors="replace")
+                prefix = b""
+                pending = False
+            elif part:
+                pending = True
+    if pending:
+        yield prefix.decode("utf-8", errors="replace")
+
+
+def clean(text: str, width: int = 240) -> str:
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+    return text if len(text) <= width else text[:width] + "..."
+
+
+def summarize(log: BinaryIO, tail_count: int) -> tuple[int, list[str]]:
+    """Keep bounded result, excerpt and tail buffers, even for a huge log."""
+    tail: deque[str] = deque(maxlen=tail_count)
+    results: dict[str, str] = {}
+    go_results: deque[str] = deque(maxlen=3)
+    failures: list[list[str]] = []
+    keys: set[str] = set()
+    omitted = 0
+    count = 0
+    for count, raw in enumerate(lines(log), 1):
+        text = clean(raw)
+        tail.append(text)
+        absorbed = False
+        for excerpt in failures:
+            if len(excerpt) < 3:
+                excerpt.append(text)
+                absorbed = True
+        # Keep each TAP counter, and the latest summary for the other runners.
+        # node --test: TAP reporter uses "# ", the spec reporter uses "ℹ ".
+        tap = re.match(r"^(?:#|ℹ) (tests|pass|fail|skipped)\s+\d+", text)
+        if tap:
+            results[tap[1]] = text
+        if re.search(r"\b\d+ (?:passed|failed|skipped|xfailed|xpassed)\b", text) and (
+            re.match(r"^[= ]*\d+ ", text)
+        ):
+            results["pytest"] = text
+        if re.match(r"^(?:ok\s+\S+|FAIL(?:\s|$))", text):
+            go_results.append(text)
+        if text.startswith("test result:"):
+            results["cargo"] = text
+        runner = re.match(r"^\s*(Test Suites|Tests|Snapshots|Test Files)\s*[: ]", text)
+        if runner:
+            results[runner[1]] = text.strip()
+        if re.search(r"\bnot ok\b|\bFAILED\b|\bError\b|\berror:|\bTraceback\b", raw):
+            # Already shown as context of an open excerpt: don't repeat it.
+            if text in keys or absorbed:
+                continue
+            if len(failures) < 5:
+                keys.add(text)
+                failures.append([text])
+            else:
+                omitted += 1
+    summary = []
+    if results or go_results:
+        summary.append("result: " + clean(" | ".join([*results.values(), *go_results]), 960))
+    summary.extend("failure: " + " | ".join(excerpt) for excerpt in failures)
+    if omitted:
+        summary.append(f"... {omitted} more failure matches omitted")
+    summary.extend(tail)
+    return count, summary
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    tail_count = 10
+    directory = os.environ.get("RUN_CAP_DIR") or "./.cap"
+    while args:
+        option = args[0]
+        if option in ("-h", "--help"):
+            usage()
+            return 0
+        if option == "--":
+            args = args[1:]
+            break
+        if option in ("--tail", "--dir"):
+            if len(args) < 2:
+                bad(option + " requires an argument")
+            value = args[1]
+            args = args[2:]
+            if option == "--dir":
+                if not value:
+                    bad("--dir requires a non-empty path")
+                directory = value
+            else:
+                if not re.fullmatch(r"[0-9]{1,9}", value):
+                    bad("--tail must be a non-negative integer")
+                tail_count = int(value)
+            continue
+        if option.startswith("-"):
+            bad("unknown option: " + option)
+        break
+    if not args:
+        bad("a command is required")
+
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(args[0]))[:48] or "command"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    try:
+        os.makedirs(directory, exist_ok=True)
+        fd, path = tempfile.mkstemp(prefix=f"{stamp}-{slug}-", suffix=".log", dir=directory)
+    except OSError as error:
+        print(f"run-cap: cannot create log: {error}", file=sys.stderr)
+        return 1
+
+    started = time.monotonic()
+    received = 0
+    with os.fdopen(fd, "w+b") as log:
+        child: subprocess.Popen[bytes] | None = None
+
+        def forward(signum: int, frame: FrameType | None) -> None:
+            nonlocal received
+            received = signum
+            if child is not None:
+                try:
+                    os.killpg(child.pid, signum)
+                except ProcessLookupError:
+                    pass  # The command exited concurrently with the signal.
+
+        # Install before spawning so an immediately signaling child cannot race us.
+        handlers = {sig: signal.signal(sig, forward)
+                    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        # Both descriptors share one file offset: no pipe or output-sized buffer.
+        try:
+            with subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT,
+                                  start_new_session=True) as spawned:
+                child = spawned
+                if received:
+                    forward(received, None)
+                code = child.wait()
+        except FileNotFoundError:
+            code = 127
+            log.write(f"Error: command not found: {args[0]}\n".encode())
+        except OSError as error:
+            code = 126
+            log.write(f"Error: cannot execute {args[0]}: {error}\n".encode())
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+        duration = time.monotonic() - started
+        signum = -code if code < 0 else received
+        status = 128 - code if code < 0 else code
+        log.seek(0)
+        count, summary = summarize(log, tail_count)
+    notice = f" · signal {signal.Signals(signum).name}" if signum else ""
+    print(f"exit {status} · {duration:.3f}s · {count} lines{notice}")
+    for line in summary:
+        print(line)
+    print("full log: " + os.path.abspath(path))
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

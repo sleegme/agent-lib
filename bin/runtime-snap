@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# runtime-snap -- resolve commands and run only their bounded --version.
+set -u
+
+usage() {
+    cat <<'EOF'
+usage: runtime-snap <cmd>...
+
+Print ## <cmd> with its PATH resolution, resolved symlink target, and the
+first two lines of --version output. No other command arguments are run.
+
+Options:
+  -h, --help  show this help and exit
+
+Requires timeout and readlink. RUNTIME_SNAP_TIMEOUT_SECONDS overrides the
+default 5-second version timeout (positive integer); a stuck process is
+killed after at most one additional second.
+Exit status: 0 on success, 1 if a command is missing or its version fails,
+2 on usage error.
+EOF
+}
+
+if [ "$#" -eq 0 ]; then
+    usage >&2
+    exit 2
+fi
+for cmd in "$@"; do
+    case "$cmd" in
+        -h|--help) usage; exit 0 ;;
+        -*|"") printf 'runtime-snap: expected a command name: %s\n' "$cmd" >&2; exit 2 ;;
+    esac
+done
+seconds=${RUNTIME_SNAP_TIMEOUT_SECONDS:-5}
+if ! [[ "$seconds" =~ ^[0-9]+$ ]] || [ "$seconds" -le 0 ]; then
+    printf 'runtime-snap: RUNTIME_SNAP_TIMEOUT_SECONDS must be a positive integer\n' >&2
+    exit 2
+fi
+for dependency in timeout readlink awk; do
+    if ! command -v "$dependency" >/dev/null 2>&1; then
+        printf 'runtime-snap: %s: not found\n' "$dependency" >&2
+        exit 1
+    fi
+done
+
+status=0
+for cmd in "$@"; do
+    printf '## %s\n' "$cmd"
+    resolved=$(command -v -- "$cmd" 2>/dev/null || true)
+    if [ -z "$resolved" ] || [ ! -f "$resolved" ] || [ ! -x "$resolved" ]; then
+        printf 'not found\n'
+        status=1
+        continue
+    fi
+    printf 'path: %s\n' "$resolved"
+    target=$(readlink -f -- "$resolved" 2>/dev/null || true)
+    printf 'target: %s\n' "$target"
+    version=$(
+        set -o pipefail
+        timeout --kill-after=1s "${seconds}s" "$resolved" --version 2>&1 | awk 'NR <= 2'
+    )
+    rc=$?
+    printf 'version:\n%s\n' "${version:-'(no output)'}"
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+        printf 'timed out after %ss\n' "$seconds"
+        status=1
+    elif [ "$rc" -ne 0 ]; then
+        printf 'version failed (exit %s)\n' "$rc"
+        status=1
+    fi
+done
+exit "$status"

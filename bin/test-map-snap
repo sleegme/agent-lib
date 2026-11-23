@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# test-map-snap -- static test relationships, never test execution.
+set -u
+export GIT_OPTIONAL_LOCKS=0
+export LC_ALL=C
+
+usage() {
+    printf '%s\n' \
+        'usage: test-map-snap [repo] [--base REF] [--files f1,f2...] [--lines N]' \
+        '' \
+        'Print ## changed files, ## candidate tests, ## test commands and ## test names.' \
+        'Default: staged, unstaged and untracked files against HEAD.' \
+        '--base REF compares REF directly to the working tree, including untracked files.' \
+        '--files overrides changed-file discovery; paths are relative to the repo root.' \
+        '--lines N bounds each command/name excerpt (default 10, maximum 200).' \
+        'Limits: 20 input files, 2000 scanned paths, 10 candidate tests, 10 manifests,' \
+        '256 KiB per content read, 16 MiB total, 240 characters per output line.' \
+        'node_modules/.git/vendor/generated directories and symlinks are excluded.' \
+        'Matches are RELATED_BY_TEXT, not coverage or pass/fail evidence.' \
+        'No tests, hooks, external diff drivers or declared commands are executed.' \
+        'Exit status: 0 success, 1 repository/read lookup failure, 2 usage error.'
+}
+
+die() { printf 'test-map-snap: %s\n' "$*" >&2; exit 1; }
+bad() { printf 'test-map-snap: %s\n' "$*" >&2; usage >&2; exit 2; }
+dir=""
+base=HEAD
+files=""
+explicit=0
+lines=10
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --base|--files|--lines)
+            [ "$#" -ge 2 ] && [ -n "$2" ] || bad "$1 requires a non-empty argument"
+            option=$1; value=$2; shift 2
+            case "$option" in
+                --base) base=$value ;;
+                --files) files=$value; explicit=1 ;;
+                --lines) lines=$value ;;
+            esac
+            ;;
+        --base=*) base=${1#*=}; [ -n "$base" ] || bad '--base requires a non-empty argument'; shift ;;
+        --files=*) files=${1#*=}; [ -n "$files" ] || bad '--files requires a non-empty argument'; explicit=1; shift ;;
+        --lines=*) lines=${1#*=}; shift ;;
+        -*) bad "unknown option: $1" ;;
+        *) [ -z "$dir" ] || bad "unexpected extra argument: $1"; dir=$1; shift ;;
+    esac
+done
+[[ "$lines" =~ ^[0-9]{1,3}$ ]] || bad '--lines must be an integer from 1 to 200'
+lines=$((10#$lines))
+[ "$lines" -ge 1 ] && [ "$lines" -le 200 ] || bad '--lines must be an integer from 1 to 200'
+[ -n "$dir" ] || dir=.
+[ -d "$dir" ] || die "$dir: no such directory"
+git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || die "$dir: not a git repository"
+root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || die 'work tree root lookup failed'
+dir=$root
+# name-only does not need the stat-only index refresh used by diff --stat.
+# No implicit promisor fetches: a partial clone would otherwise run remote helpers.
+export GIT_NO_LAZY_FETCH=1
+# core.fsmonitor=false: a configured fsmonitor hook would execute (and may write).
+g() { git --no-pager -c diff.autoRefreshIndex=false -c core.fsmonitor=false -C "$dir" "$@"; }
+
+# Escape unusual filenames and bound even single-line/minified content.
+emit() {
+    local text=$1
+    text=${text//$'\n'/\\n}
+    text=${text//$'\r'/\\r}
+    text=${text//$'\t'/\\t}
+    if [ "${#text}" -gt 240 ]; then
+        printf '%s ... truncated (line)\n' "${text:0:240}"
+    else
+        printf '%s\n' "$text"
+    fi
+}
+excerpt() {
+    local text=$1 count=0 line
+    while IFS= read -r line; do
+        count=$((count + 1))
+        [ "$count" -gt "$lines" ] || emit "$line"
+    done < <(printf '%s\n' "$text")
+    if [ "$count" -gt "$lines" ]; then
+        printf '... truncated, %d more lines\n' "$((count - lines))"
+    fi
+}
+
+declare -A seen_inputs=()
+inputs=()
+input_count=0
+add_input() {
+    local path=${1#./}
+    [ -n "$path" ] || bad 'empty file path'
+    case "/$path/" in
+        *'/../'*|*'/./'*|//* ) bad "expected repo-relative file path: $path" ;;
+    esac
+    [ -z "${seen_inputs[$path]+yes}" ] || return 0
+    seen_inputs["$path"]=1
+    input_count=$((input_count + 1))
+    [ "${#inputs[@]}" -ge 20 ] || inputs+=("$path")
+}
+if [ "$explicit" -eq 1 ]; then
+    case "$files" in ,*|*,|*,,*) bad '--files contains an empty path' ;; esac
+    # Split without a here-string (large here-strings can create temp files).
+    rest=$files
+    while [[ "$rest" == *,* ]]; do
+        add_input "${rest%%,*}"
+        rest=${rest#*,}
+    done
+    add_input "$rest"
+else
+    ref=$(g rev-parse --verify --end-of-options "$base^{commit}" 2>/dev/null) || die "$base: base lookup failed"
+    while IFS= read -r -d '' path; do add_input "$path"; done < <(
+        g diff --no-ext-diff --no-textconv --no-renames --ignore-submodules=all --name-only -z "$ref" -- 2>/dev/null
+    )
+    wait "$!" || die 'git diff --name-only lookup failed'
+    while IFS= read -r -d '' path; do add_input "$path"; done < <(
+        g ls-files --others --exclude-standard -z 2>/dev/null
+    )
+    wait "$!" || die 'git ls-files lookup failed'
+fi
+
+printf '## repo\n'
+emit "$root"
+printf '## changed files\n'
+if [ "$explicit" -eq 1 ]; then
+    printf 'source: --files (repo-relative)\n'
+else
+    emit "source: $base -> working tree (including untracked)"
+fi
+for path in "${inputs[@]}"; do emit "$path"; done
+[ "$input_count" -ne 0 ] || printf '(none)\n'
+if [ "$input_count" -gt 20 ]; then
+    printf '... truncated, %d more input files\n' "$((input_count - 20))"
+fi
+
+# Never follow tracked symlinks or a replaced directory outside the work tree.
+safe_file() {
+    local path=$1 parent=$1
+    [ -f "$dir/$path" ] || return 1
+    while :; do
+        [ ! -L "$dir/$parent" ] || return 1
+        [[ "$parent" == */* ]] || break
+        parent=${parent%/*}
+    done
+}
+read_bytes=0
+skipped=0
+content=""
+read_content() {
+    local path=$1 size
+    safe_file "$path" || { skipped=$((skipped + 1)); return 1; }
+    size=$(wc -c < "$dir/$path") || die "cannot size $path"
+    if [ "$size" -gt 262144 ] || [ "$((read_bytes + size))" -gt 16777216 ]; then
+        skipped=$((skipped + 1))
+        return 1
+    fi
+    # Binary files (any NUL byte) are skipped: bash would silently drop NULs.
+    if ! LC_ALL=C tr -d '\000' < "$dir/$path" | cmp -s - "$dir/$path"; then
+        skipped=$((skipped + 1))
+        return 1
+    fi
+    read_bytes=$((read_bytes + size))
+    # Bound the read too, even if the file grows after the size check.
+    content=$(head -c 262144 -- "$dir/$path") || die "cannot read $path"
+}
+
+tests=()
+contents=()
+manifests=()
+declare -A scanned=()
+scan_count=0
+omitted=0
+manifest_omitted=0
+while IFS= read -r -d '' path; do
+    case "/$path/" in
+        */node_modules/*|*/.git/*|*/vendor/*|*/generated/*) continue ;;
+    esac
+    [ -z "${scanned[$path]+yes}" ] || continue
+    scanned["$path"]=1
+    if [ "$scan_count" -ge 2000 ]; then omitted=$((omitted + 1)); continue; fi
+    scan_count=$((scan_count + 1))
+    name=${path##*/}
+    case "$name" in
+        package.json|Makefile|makefile|GNUmakefile|pyproject.toml|tox.ini|setup.cfg)
+            if [ "${#manifests[@]}" -lt 10 ]; then
+                manifests+=("$path")
+            else
+                manifest_omitted=$((manifest_omitted + 1))
+            fi
+            ;;
+    esac
+    case "/$path" in
+        */tests/*|*/test/*|*/__tests__/*|*/test_*|*/*.test.*|*/*_test.*|*/*.spec.*)
+            if read_content "$path"; then
+                tests+=("$path")
+                contents+=("$content")
+            fi
+            ;;
+    esac
+done < <(g ls-files --cached --others --exclude-standard -z 2>/dev/null)
+wait "$!" || die 'git ls-files lookup failed'
+
+printf '## candidate tests\nRELATED_BY_TEXT (not coverage evidence)\n'
+declare -A selected=()
+candidates=()
+for source in "${inputs[@]}"; do
+    emit "### $source"
+    name=${source##*/}
+    stem=${name%.*}
+    mirror=${source#src/}
+    found=0
+    extra=0
+    for i in "${!tests[@]}"; do
+        test_path=${tests[$i]}
+        test_name=${test_path##*/}
+        reason=""
+        case "$test_name" in
+            "test_$stem".*|"$stem.test".*|"$stem"_test.*|"$stem.spec".*) reason=naming ;;
+        esac
+        if [ "$test_path" = "$source" ] ||
+            [ "$test_path" = "tests/$source" ] || [ "$test_path" = "__tests__/$source" ] ||
+            [ "$test_path" = "tests/$mirror" ] || [ "$test_path" = "__tests__/$mirror" ] ||
+            [ "$test_path" = "${source%/*}/__tests__/$name" ]; then
+            reason=mirror
+        fi
+        if [ -z "$reason" ] && printf '%s\n' "${contents[$i]}" |
+            grep -Fq -e "$source" -e "$name" -e "$stem"; then
+            reason=reference
+        fi
+        [ -n "$reason" ] || continue
+        if [ -z "${selected[$i]+yes}" ]; then
+            if [ "${#candidates[@]}" -ge 10 ]; then extra=$((extra + 1)); continue; fi
+            candidates+=("$i")
+            selected["$i"]=1
+        fi
+        emit "$test_path [$reason]"
+        found=$((found + 1))
+    done
+    [ "$found" -ne 0 ] || printf '(none within scan limits)\n'
+    [ "$extra" -eq 0 ] || printf '... truncated, %d more candidate tests (10 unique test limit)\n' "$extra"
+done
+[ "${#inputs[@]}" -ne 0 ] || printf '(none)\n'
+
+printf '## test commands\n'
+declared=0
+for path in "${manifests[@]}"; do
+    read_content "$path" || continue
+    case "${path##*/}" in
+        package.json)
+            declarations=$(printf '%s\n' "$content" | grep -nE '"(test([^"]*)?|scripts)"[[:space:]]*:.*' || true)
+            ;;
+        *[Mm]akefile|GNUmakefile)
+            declarations=$(printf '%s\n' "$content" | awk '
+                /^[^[:space:]#][^:]*:/ { test = ($0 ~ /(^|[[:space:]])test[^:[:space:]]*([[:space:]]|:)/) }
+                test && ($0 ~ /^[^[:space:]#][^:]*:/ || $0 ~ /^\t/) { print NR ":" $0 }
+            ')
+            ;;
+        *)
+            declarations=$(printf '%s\n' "$content" | grep -nE -A 3 'pytest|unittest|(^|[[:space:]])test[[:space:]]*=|^\[testenv' || true)
+            ;;
+    esac
+    [ -n "$declarations" ] || continue
+    emit "### $path (declared text; not executed)"
+    excerpt "$declarations"
+    declared=$((declared + 1))
+done
+[ "$declared" -ne 0 ] || printf '(none declared within scan limits)\n'
+
+printf '## test names\n'
+for i in "${candidates[@]}"; do
+    emit "### ${tests[$i]}"
+    names=$(printf '%s\n' "${contents[$i]}" | grep -nE '(^|[^[:alnum:]_])(test|it|describe)(\.[[:alnum:]_]+)*[[:space:]]*\(|(^|[[:space:]])(async[[:space:]]+)?def[[:space:]]+test_' || true)
+    if [ -n "$names" ]; then excerpt "$names"; else printf '(no literal test names)\n'; fi
+done
+[ "${#candidates[@]}" -ne 0 ] || printf '(none)\n'
+printf '## limits\nscanned %d paths; read %d bytes\n' "$scan_count" "$read_bytes"
+[ "$omitted" -eq 0 ] || printf '... truncated, %d more scan paths\n' "$omitted"
+[ "$manifest_omitted" -eq 0 ] || printf '... truncated, %d more manifests\n' "$manifest_omitted"
+[ "$skipped" -eq 0 ] || printf '... truncated, %d content reads skipped (size/budget/non-regular/symlink)\n' "$skipped"
+exit 0

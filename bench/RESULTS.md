@@ -40,6 +40,11 @@ All arms 4/4 correct at ~26.3k–27.4k median tokens. Nobody called `calc` even 
 hinted; the model delegated arithmetic to a single `python3 -c` instead. On this model
 the calculator hint is pure overhead (~+0.5–1.1k): drop it from the default hint set.
 
+The calculator and unused Python wrapper were subsequently removed from the
+toolkit. Calibration records remain historical evidence; reproducing the
+calculator-specific harness requires the pre-cleanup revision `d971013`.
+The current harness runs the eight main-study tasks only.
+
 ## Caveats
 
 - One model, one fixture, 4 reps: directional only. Means are dominated by the heavy

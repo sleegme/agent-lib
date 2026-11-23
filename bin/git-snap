@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # git-snap -- one-shot repository snapshot for an agent.
 set -u
+# Include the separately invoked per-worktree probes in the read-only policy.
+export GIT_OPTIONAL_LOCKS=0
 
 usage() {
     cat <<'EOF'
-usage: git-snap [repo-dir]
+usage: git-snap [repo-dir] [--worktrees]
 
 Print a compact snapshot of a repository (default: current directory) with
 one "## title" section per area:
@@ -16,8 +18,10 @@ one "## title" section per area:
   ## commits              last 5 commits, oneline with dates
   ## remotes              fetch URLs
   ## stash                number of stash entries
+  ## worktrees            worktrees list (with --worktrees)
 
 Options:
+  --worktrees  include worktrees list with status
   -h, --help   show this help and exit
 
 Exit status: 0 on success, 1 when the directory is missing or is not a git
@@ -25,19 +29,39 @@ repository, 2 on usage error.
 EOF
 }
 
-if [ "$#" -gt 1 ]; then
-    printf 'git-snap: unexpected extra argument: %s\n' "$2" >&2
-    usage >&2
-    exit 2
-fi
+dir=""
+show_worktrees=0
 
-dir=.
-case ${1:-} in
-    -h|--help) usage; exit 0 ;;
-    "") ;;
-    -*) printf 'git-snap: unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
-    *) dir=$1 ;;
-esac
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --worktrees)
+            show_worktrees=1
+            shift
+            ;;
+        -*)
+            printf 'git-snap: unknown option: %s\n' "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            if [ -n "$dir" ]; then
+                printf 'git-snap: unexpected extra argument: %s\n' "$1" >&2
+                usage >&2
+                exit 2
+            fi
+            dir="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$dir" ]; then
+    dir=.
+fi
 
 if [ ! -d "$dir" ]; then
     printf 'git-snap: %s: no such directory\n' "$dir" >&2
@@ -140,5 +164,65 @@ fi
 printf '## stash\n'
 entries=$(g stash list 2>/dev/null | wc -l)
 printf '%s entries\n' "$entries"
+
+if [ "$show_worktrees" -eq 1 ]; then
+    printf '## worktrees\n'
+    wt_path=""
+    wt_head=""
+    wt_branch=""
+    wt_detached=0
+
+    flush_worktree() {
+        [ -z "$wt_path" ] && return
+        local label=""
+        local short_sha=""
+        if [ "$wt_detached" -eq 1 ]; then
+            short_sha=$(git --no-pager -C "$wt_path" rev-parse --short "$wt_head" 2>/dev/null || true)
+            [ -n "$short_sha" ] || short_sha="${wt_head:0:7}"
+            label="detached at $short_sha"
+        elif [ -n "$wt_branch" ]; then
+            label="${wt_branch#refs/heads/}"
+        else
+            short_sha=$(git --no-pager -C "$wt_path" rev-parse --short "$wt_head" 2>/dev/null || true)
+            [ -n "$short_sha" ] || short_sha="${wt_head:0:7}"
+            if [ -n "$short_sha" ]; then
+                label="detached at $short_sha"
+            else
+                label="unknown"
+            fi
+        fi
+        local dirty_status=""
+        dirty_status=$(git --no-pager -C "$wt_path" status --short 2>/dev/null || true)
+        local state="clean"
+        [ -n "$dirty_status" ] && state="dirty"
+        printf '%s [%s] %s\n' "$wt_path" "$label" "$state"
+        wt_path=""
+        wt_head=""
+        wt_branch=""
+        wt_detached=0
+    }
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "worktree "*)
+                flush_worktree
+                wt_path="${line#worktree }"
+                ;;
+            "HEAD "*)
+                wt_head="${line#HEAD }"
+                ;;
+            "branch "*)
+                wt_branch="${line#branch }"
+                ;;
+            "detached")
+                wt_detached=1
+                ;;
+            "")
+                flush_worktree
+                ;;
+        esac
+    done < <(g worktree list --porcelain 2>/dev/null || true)
+    flush_worktree
+fi
 
 exit 0
