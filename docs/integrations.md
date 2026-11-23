@@ -22,10 +22,15 @@ Append to `CLAUDE.md` (repo root, or `~/.claude/CLAUDE.md` for global):
 - `gate-preflight [repo]` — every declared version with MATCH/MISMATCH plus git state
 - `test-map-snap [repo]` — tests related to changed files; static, never runs them
 - `run-cap [--] cmd args...` — capture long output, print a bounded summary, keep the full log
+- `repo-map [dir]` — first-visit briefing: structure, languages, declared scripts, entrypoints
+- `verify [dir]` — discovered test/lint/build checks, one compact verdict, failing names
+- `recipe run <name> [param=value ...]` — saved multi-step operations; one bounded line per step
+- `ship --plan [dir]` — release preflight (versions, changelog, checks, tree) with GO/NO-GO; dry-run only
 - `ctx <file>... [file:A-B]` — several files with line numbers, bounded
 
-All are read-only except run-cap's log dir. Prefer them over chained
-ls/head/git/gh round-trips.
+All are read-only except run-cap's log dir, verify and ship --plan (they run
+the repo's own checks), and recipe (it runs the saved recipe commands).
+Prefer them over chained ls/head/git/gh round-trips.
 ```
 
 The same body works as a skill: save it as
@@ -49,8 +54,10 @@ Append to `AGENTS.md` in the repo root:
 
 Prefer the one-call snapshot tools over multi-step probing: git-snap,
 change-snap, pr-snap, runtime-snap, service-snap, log-triage, logscan,
-gate-preflight, test-map-snap, run-cap, ctx. Each prints a bounded,
-sectioned summary and is read-only (except run-cap's log dir). Run
+gate-preflight, test-map-snap, run-cap, repo-map, verify, recipe,
+ship --plan, ctx. Each prints a bounded, sectioned summary and is
+read-only (except run-cap's log dir, verify/ship --plan which run the
+repo's checks, and recipe which runs saved commands). Run
 `<tool> --help` once for exact flags.
 ```
 
@@ -62,8 +69,10 @@ Put the same `AGENTS.md` block in the repo root, or globally in
 
 ```markdown
 Prefer the agent-lib one-call tools (git-snap, change-snap, pr-snap,
-log-triage, logscan, run-cap, ...) over chained shell round-trips; each is
-read-only, bounded and safe to run without confirmation.
+log-triage, logscan, run-cap, repo-map, verify, recipe, ship --plan, ...)
+over chained shell round-trips; each prints bounded, sectioned output
+and changes nothing (except run-cap's log dir, verify/ship --plan which
+run the repo's checks, and recipe which runs saved commands).
 ```
 
 ## Any agent with a shell
@@ -74,7 +83,9 @@ Paste into the system prompt or instruction file:
 When you need repository, PR, log or environment state, prefer these
 one-call tools over multiple shell round-trips. They print bounded,
 sectioned output and change nothing (except run-cap, which writes a log
-dir): git-snap, change-snap, pr-snap, runtime-snap, service-snap,
-log-triage, logscan, gate-preflight, test-map-snap, ctx. For long test or
-build output: run-cap -- <command>. Run <tool> --help for exact usage.
+dir; verify and ship --plan, which run the repo's checks; and recipe,
+which runs saved commands): git-snap, change-snap, pr-snap, runtime-snap,
+service-snap, log-triage, logscan, gate-preflight, test-map-snap,
+repo-map, verify, recipe, ship --plan, ctx. For long test or build output:
+run-cap -- <command>. Run <tool> --help for exact usage.
 ```

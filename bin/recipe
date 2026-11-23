@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# recipe -- invoke a saved, parameterized operation once instead of
+# re-generating its command sequence every run.
+#
+# usage: recipe run <name> [param=value ...] [--dry-run]
+#
+# Recipes live in ./.agent-lib/recipes/<name>.recipe: one command per line,
+# '#' comments allowed, '$param' substituted from param=value arguments
+# (positional bare values bind to $0, $1, ... in order). Each step runs with
+# its output captured; the printout is one bounded line per step:
+#   "N. PASS  <command>" [+ "       out: <first output line>"]
+#   "N. FAIL  <command> -> <first error/output line>"
+# --dry-run prints the substituted commands without running them.
+#
+# Recipes are trusted repo content, like a Makefile: they run arbitrary
+# commands by design. Review recipe files before adding them.
+#
+# Exit status: 0 all steps passed, 1 a step failed, 2 usage/unknown recipe.
+set -u
+
+usage() {
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+}
+
+help() {
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+}
+
+case "${1:-}" in
+  -h|--help) help ;;
+  run) ;;
+  *) usage ;;
+esac
+name="${2:-}"
+[ -n "$name" ] || usage
+shift 2
+
+dry_run=0
+declare -A PARAMS
+positional=()
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) dry_run=1 ;;
+    *=*) PARAMS["${arg%%=*}"]="${arg#*=}" ;;
+    *) positional+=("$arg") ;;
+  esac
+done
+i=0
+for v in "${positional[@]:-}"; do
+  [ -n "$v" ] || continue
+  PARAMS["$((i))"]="$v"
+  i=$((i + 1))
+done
+
+recipe="./.agent-lib/recipes/$name.recipe"
+[ -f "$recipe" ] || { echo "recipe: no such recipe: $name (looked in ./.agent-lib/recipes/)" >&2; exit 2; }
+
+failed=0
+n=0
+outtmp=$(mktemp)
+trap 'rm -f "$outtmp"' EXIT
+while IFS= read -r line; do
+  case "$line" in ''|'#'*) continue ;; esac
+  n=$((n + 1))
+  cmd="$line"
+  for k in "${!PARAMS[@]}"; do
+    cmd="${cmd//\$$k/${PARAMS[$k]}}"
+  done
+  if [ "$dry_run" = 1 ]; then
+    echo "$n. DRY   $cmd"
+    continue
+  fi
+  # shellcheck disable=SC2086 -- intentional word splitting after substitution
+  if eval "$cmd" >"$outtmp" 2>&1; then
+    first=$(grep -m1 -v '^[[:space:]]*$' "$outtmp" | cut -c1-140)
+    if [ -n "$first" ]; then
+      echo "$n. PASS  $cmd"
+      echo "       out: $first"
+    else
+      echo "$n. PASS  $cmd"
+    fi
+  else
+    failed=1
+    first=$(grep -m1 -v '^[[:space:]]*$' "$outtmp" | cut -c1-140)
+    echo "$n. FAIL  $cmd -> ${first:-exit $?}"
+  fi
+done <"$recipe"
+
+exit "$failed"

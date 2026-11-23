@@ -31,7 +31,7 @@ eq() { # eq <label> <actual> <expected>
     fi
 }
 
-for s in ctx git-snap change-snap pr-snap runtime-snap service-snap log-triage logscan gate-preflight test-map-snap run-cap; do
+for s in ctx git-snap change-snap pr-snap runtime-snap service-snap log-triage logscan gate-preflight test-map-snap run-cap repo-map verify recipe ship; do
     if [ ! -x "./$s" ]; then
         printf 'error: ./%s missing or not executable\n' "$s" >&2
         exit 2
@@ -1026,6 +1026,254 @@ out=$(./run-cap --dir "$tmp/rc-dedup" -- sh -c 'echo "not ok 1 - boom"; echo "  
 eq 'run-cap: dedup exit 3' "$rc" 3
 n=$(printf '%s\n' "$out" | grep -c '^failure:')
 eq 'run-cap: context line not repeated as its own excerpt' "$n" 1
+
+echo
+echo '=== repo-map ==='
+rmfx=$tmp/rmfx
+mkdir -p "$rmfx/src/lib" "$rmfx/tools" "$rmfx/tests" "$rmfx/docs" "$rmfx/node_modules/pkg"
+cat > "$rmfx/package.json" <<'EOF'
+{
+  "name": "mixtool",
+  "version": "1.2.0",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test tests/",
+    "lint": "node tools/lint.js"
+  }
+}
+EOF
+echo 'module.exports = 1;' > "$rmfx/src/index.js"
+echo 'module.exports = 2;' > "$rmfx/src/lib/a.js"
+test_js="$rmfx/tests/smoke.test.js"
+printf "const test = require('node:test');\ntest('smoke', () => {});\n" > "$test_js"
+printf 'TABLE = {i: i * i for i in range(10)}\n' > "$rmfx/tools/gen.py"
+printf '[project]\nname = "mixtool-py"\nversion = "3.1.4"\n' > "$rmfx/pyproject.toml"
+echo 'skip me' > "$rmfx/node_modules/pkg/index.js"
+echo '# mixtool' > "$rmfx/README.md"
+
+out=$(./repo-map "$rmfx"); rc=$?
+eq 'repo-map: exit 0' "$rc" 0
+has 'repo-map: repo section' "$out" '## repo'
+has 'repo-map: tree section' "$out" '## tree'
+has 'repo-map: dir line' "$out" 'src/'
+has 'repo-map: file line' "$out" '- index.js'
+hasnt 'repo-map: node_modules skipped' "$out" 'node_modules'
+has 'repo-map: languages section' "$out" '## languages'
+has 'repo-map: js count' "$out" ' .js: 3'
+has 'repo-map: py count' "$out" ' .py: 1'
+has 'repo-map: package.json manifest' "$out" 'package.json name=mixtool version=1.2.0'
+has 'repo-map: test script' "$out" 'npm run test -> node --test tests/'
+has 'repo-map: main field' "$out" 'main: src/index.js'
+has 'repo-map: pyproject head' "$out" 'version = "3.1.4"'
+
+awk 'BEGIN { for (i = 1; i <= 200; i++) printf "f%03d\n", i }' | while IFS= read -r f; do
+    : > "$rmfx/many_$f.txt"
+done
+out=$(./repo-map "$rmfx")
+has 'repo-map: truncation note' "$out" 'more entries'
+n=$(printf '%s\n' "$out" | grep -c '^- ')
+if [ "$n" -le 121 ]; then
+    pass=$((pass + 1)); printf 'ok   repo-map: tree bounded\n'
+else
+    fail=$((fail + 1)); printf 'FAIL repo-map: tree bounded -- got %s file lines\n' "$n"
+fi
+rm -rf "$rmfx/many_"*.txt
+
+out=$(./repo-map "$tmp/nope" 2>&1); rc=$?
+eq 'repo-map: missing dir exit 1' "$rc" 1
+has 'repo-map: missing dir message' "$out" 'not a directory'
+out=$(./repo-map --help); rc=$?
+eq 'repo-map: --help exit 0' "$rc" 0
+has 'repo-map: --help usage' "$out" 'usage: repo-map'
+out=$(./repo-map a b 2>&1); rc=$?
+eq 'repo-map: two args exit 2' "$rc" 2
+
+echo
+echo '=== verify ==='
+vfx=$tmp/vfx
+mkdir -p "$vfx/tests" "$vfx/src" "$vfx/tools"
+cat > "$vfx/package.json" <<'EOF'
+{
+  "name": "vfix",
+  "version": "0.1.0",
+  "scripts": {
+    "test": "node --test tests/",
+    "lint": "node tools/lint.js"
+  }
+}
+EOF
+cat > "$vfx/tests/core.test.js" <<'EOF'
+const test = require('node:test');
+const assert = require('node:assert');
+test('adds numbers', () => assert.equal(1 + 1, 2));
+test('multiplies numbers', () => assert.equal(2 * 3, 7));
+EOF
+cat > "$vfx/tools/lint.js" <<'EOF'
+const fs = require('fs');
+const path = require('path');
+let bad = 0;
+const walk = p => {
+  const st = fs.statSync(p);
+  if (st.isDirectory()) fs.readdirSync(p).sort().forEach(e => walk(path.join(p, e)));
+  else if (p.endsWith('.js')) fs.readFileSync(p, 'utf8').split('\n').forEach((l, i) => {
+    if (l.includes('console.log')) { bad++; console.log('Lint issue in ' + path.relative(process.cwd(), p)); }
+  });
+};
+walk('src');
+process.exit(bad ? 1 : 0);
+EOF
+echo "module.exports = { ok: () => 'fine' };" > "$vfx/src/clean.js"
+printf "module.exports = { dump: () => {\n  console.log('dumping');\n} };\n" > "$vfx/src/debug.js"
+
+out=$(./verify "$vfx"); rc=$?
+eq 'verify: failing fixture exit 1' "$rc" 1
+has 'verify: failing test named' "$out" 'test: FAIL -> multiplies numbers'
+if printf '%s\n' "$out" | grep -q 'adds numbers'; then
+    fail=$((fail + 1)); printf 'FAIL verify: passing test leaked into verdict\n'
+else
+    pass=$((pass + 1)); printf 'ok   verify: passing test not in verdict\n'
+fi
+has 'verify: lint failure named' "$out" 'lint: FAIL -> src/debug.js'
+if printf '%s\n' "$out" | grep -q 'clean.js'; then
+    fail=$((fail + 1)); printf 'FAIL verify: clean file wrongly flagged\n'
+else
+    pass=$((pass + 1)); printf 'ok   verify: clean file not flagged\n'
+fi
+printf "module.exports = { dump: () => 'quiet' };\n" > "$vfx/src/debug.js"
+sed -i "s/assert.equal(2 \* 3, 7)/assert.equal(2 * 3, 6)/" "$vfx/tests/core.test.js"
+out=$(./verify "$vfx"); rc=$?
+eq 'verify: green fixture exit 0' "$rc" 0
+has 'verify: test pass line' "$out" 'test: PASS'
+has 'verify: lint pass line' "$out" 'lint: PASS'
+
+mkfx=$tmp/vf-make
+mkdir -p "$mkfx"
+printf 'test:\n\t@echo all good\n' > "$mkfx/Makefile"
+out=$(./verify "$mkfx"); rc=$?
+eq 'verify: makefile discovery exit 0' "$rc" 0
+has 'verify: makefile check pass' "$out" 'test: PASS'
+
+empty=$tmp/vf-empty
+mkdir -p "$empty"
+out=$(./verify "$empty" 2>&1); rc=$?
+eq 'verify: no checks exit 2' "$rc" 2
+has 'verify: no checks message' "$out" 'no test/lint/build commands discovered'
+out=$(./verify "$tmp/nope" 2>&1); rc=$?
+eq 'verify: missing dir exit 1' "$rc" 1
+out=$(./verify --help); rc=$?
+eq 'verify: --help exit 0' "$rc" 0
+has 'verify: --help usage' "$out" 'usage: verify'
+
+echo
+echo '=== recipe ==='
+rcpfx=$tmp/rcpfx
+mkdir -p "$rcpfx/.agent-lib/recipes"
+printf '# demo recipe\necho hello $who\necho second step\nfalse\n' > "$rcpfx/.agent-lib/recipes/demo.recipe"
+printf 'echo $a-$b\n' > "$rcpfx/.agent-lib/recipes/two.recipe"
+
+out=$( (cd "$rcpfx" && "$here/recipe" run demo who=world --dry-run) ); rc=$?
+eq 'recipe: dry-run exit 0' "$rc" 0
+has 'recipe: dry line substituted' "$out" '1. DRY   echo hello world'
+if printf '%s\n' "$out" | grep -q 'PASS'; then
+    fail=$((fail + 1)); printf 'FAIL recipe: dry-run ran commands\n'
+else
+    pass=$((pass + 1)); printf 'ok   recipe: dry-run executes nothing\n'
+fi
+
+out=$( (cd "$rcpfx" && "$here/recipe" run two a=x b=y) ); rc=$?
+eq 'recipe: two params exit 0' "$rc" 0
+has 'recipe: both params substituted' "$out" '1. PASS  echo x-y'
+has 'recipe: step output surfaced' "$out" 'out: x-y'
+
+out=$( (cd "$rcpfx" && "$here/recipe" run demo who=world) ); rc=$?
+eq 'recipe: failing third step exit 1' "$rc" 1
+has 'recipe: first step passes' "$out" '1. PASS  echo hello world'
+has 'recipe: second step passes' "$out" '2. PASS  echo second step'
+has 'recipe: third step fails' "$out" '3. FAIL  false'
+
+out=$( (cd "$rcpfx" && "$here/recipe" run nosuch) 2>&1); rc=$?
+eq 'recipe: unknown recipe exit 2' "$rc" 2
+has 'recipe: unknown recipe message' "$out" 'no such recipe: nosuch'
+out=$( (cd "$rcpfx" && "$here/recipe" demo) 2>&1); rc=$?
+eq 'recipe: missing run keyword exit 2' "$rc" 2
+out=$( (cd "$rcpfx" && "$here/recipe" --help) ); rc=$?
+eq 'recipe: --help exit 0' "$rc" 0
+has 'recipe: --help usage' "$out" 'usage: recipe run'
+out=$( (cd "$tmp" && "$here/recipe" run demo who=world) 2>&1); rc=$?
+eq 'recipe: no recipe dir exit 2' "$rc" 2
+
+echo
+echo '=== ship ==='
+spfx=$tmp/spfx
+mkdir -p "$spfx/tests"
+cat > "$spfx/package.json" <<'EOF'
+{
+  "name": "shipfix",
+  "version": "2.4.1",
+  "scripts": { "test": "node --test tests/" }
+}
+EOF
+echo '2.4.0' > "$spfx/VERSION"
+printf '# Changelog\n\n## 2.4.0\n\n- fixes\n' > "$spfx/CHANGELOG.md"
+cat > "$spfx/tests/unit.test.js" <<'EOF'
+const test = require('node:test');
+const assert = require('node:assert');
+test('formats output', () => assert.equal(2, 3));
+EOF
+echo '# shipfix' > "$spfx/README.md"
+git init -q "$spfx"
+git -C "$spfx" symbolic-ref HEAD refs/heads/main
+git -C "$spfx" add -A
+git -C "$spfx" commit -qm 'chore: release prep state'
+printf '\n<!-- late note -->\n' >> "$spfx/README.md"
+
+before_dirty=$(git -C "$spfx" status --porcelain | wc -l)
+out=$(./ship --plan "$spfx"); rc=$?
+eq 'ship: no-go exit 1' "$rc" 1
+has 'ship: version mismatch detail' "$out" 'version: MISMATCH (VERSION=2.4.0 package.json=2.4.1)'
+has 'ship: changelog gap' "$out" 'changelog: no entry for 2.4.1'
+has 'ship: failing check named' "$out" 'test: FAIL -> formats output'
+has 'ship: dirty tree counted' "$out" 'tree: DIRTY (1 changed/untracked)'
+eq 'ship: no-go reason list' "$(printf '%s\n' "$out" | tail -1)" 'NO-GO: version-mismatch, changelog-missing-entry, test-fail, dirty-tree'
+after_dirty=$(git -C "$spfx" status --porcelain | wc -l)
+eq 'ship: plan does not mutate tree' "$after_dirty" "$before_dirty"
+eq 'ship: plan creates no tags' "$(git -C "$spfx" tag | wc -l)" 0
+
+spgo=$tmp/spgo
+mkdir -p "$spgo/tests"
+cat > "$spgo/package.json" <<'EOF'
+{
+  "name": "shipgo",
+  "version": "1.0.0",
+  "scripts": { "test": "node --test tests/" }
+}
+EOF
+printf '# Changelog\n\n## 1.0.0\n\n- initial\n' > "$spgo/CHANGELOG.md"
+cat > "$spgo/tests/unit.test.js" <<'EOF'
+const test = require('node:test');
+const assert = require('node:assert');
+test('loads', () => assert.ok(true));
+EOF
+git init -q "$spgo"
+git -C "$spgo" symbolic-ref HEAD refs/heads/main
+git -C "$spgo" add -A
+git -C "$spgo" commit -qm 'release ready'
+
+out=$(./ship --plan "$spgo"); rc=$?
+eq 'ship: go exit 0' "$rc" 0
+has 'ship: version match' "$out" 'version: MATCH (1.0.0)'
+has 'ship: changelog present' "$out" 'changelog: entry for 1.0.0 present'
+has 'ship: checks pass' "$out" 'test: PASS'
+has 'ship: clean tree' "$out" 'tree: clean'
+eq 'ship: go line' "$(printf '%s\n' "$out" | tail -1)" 'GO: all checks passed'
+
+out=$(./ship "$spgo" 2>&1); rc=$?
+eq 'ship: without --plan exit 2' "$rc" 2
+out=$(./ship --help); rc=$?
+eq 'ship: --help exit 0' "$rc" 0
+has 'ship: --help usage' "$out" 'usage: ship --plan'
+out=$(./ship --plan "$tmp/nope" 2>&1); rc=$?
+eq 'ship: missing dir exit 1' "$rc" 1
 
 echo
 if [ "$fail" -eq 0 ]; then

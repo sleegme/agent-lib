@@ -17,6 +17,10 @@ agent usually spends several round-trips on.
 | `bin/gate-preflight [repo]` | `cat VERSION` / `jq .version` / `git log -1` / tag checks; prints every declared version, MATCH or MISMATCH (exit 1), and git state |
 | `bin/test-map-snap [repo] [--base REF] [--files a,b] [--lines N]` | `ls`/`find` test globs / `grep` for test references / bounded test-name excerpts; static and read-only, never runs tests |
 | `bin/run-cap [--tail N] [--dir PATH] [--] cmd args...` | large test/build/log output in the conversation; saves the full combined log and prints a bounded summary, preserving the command's exit code |
+| `bin/repo-map [dir]` | first-visit `ls`/`find`/`cat package.json` probing chains: structure, languages, scripts, entrypoints in one call |
+| `bin/verify [dir]` | running test/lint/build separately and parsing their raw output: discovered checks, one compact verdict, failing names |
+| `bin/recipe run <name> [param=value ...] [--dry-run]` | re-generating a known multi-step command sequence every run; saved recipes print one bounded line per step |
+| `bin/ship --plan [dir]` | chained release-preflight checks (versions, changelog, checks, tree) with one GO/NO-GO; dry-run only, never publishes or deploys |
 
 `run-cap` executes arguments directly (use `sh -c` explicitly for shell syntax).
 Logs go to `--dir`, then `$RUN_CAP_DIR`, then `./.cap/` in the current directory.
@@ -38,7 +42,8 @@ This is release 0.1.0 of @sleegme/agent-lib (MIT).
 
 Runtime requirements: bash and coreutils everywhere; git for `git-snap`,
 `change-snap`, `pr-snap` and `test-map-snap`; python3 for `logscan`,
-`gate-preflight`, `run-cap`, `pr-snap` and `log-triage` (log-triage's
+`gate-preflight`, `run-cap`, `pr-snap`, `log-triage`, `repo-map`, `verify`
+and `ship` (log-triage's
 JSONL features need it; it degrades gracefully without python3); the
 GitHub CLI (`gh`) for `pr-snap`; systemd (`systemctl`, `journalctl`) for
 `service-snap`.
@@ -81,6 +86,19 @@ actually used by the model in the study runs. The newer tools
 `run-cap`, `git-snap --worktrees`) were added afterwards and are covered by
 the regression suite instead. Historical calculator measurements remain in
 `bench/results/` as evidence.
+
+A second study (issue #1 shortlist, 140 runs on opencode-go
+deepseek-v4.1-flash and glm-5.3) measured the candidates that became
+`repo-map`, `verify`, `recipe` and `ship --plan` before they were added:
+repo-map saved a median -26% (deepseek) / -41% (glm) tokens versus native
+probing, recipe saved -70% on glm (12 -> 1 tool calls) but was mixed on
+deepseek, verify was consistently cheaper on deepseek and mixed on glm,
+and ship --plan deltas were within noise (kept for its structured,
+never-publishing preflight contract). The `foreach`/`target-select`
+candidate measured 2x MORE tokens than the native shell loop on both
+models and was dropped. See
+[bench/ISSUE1-RESULTS.md](https://github.com/sleegme/agent-lib/blob/exp/issue1-shortlist/bench/ISSUE1-RESULTS.md)
+on the `exp/issue1-shortlist` branch for the full data.
 
 ## Tests
 
