@@ -7,21 +7,44 @@ agent usually spends several round-trips on.
 |---|---|
 | `bin/ctx <file>... [file:A-B]` | several `view_file` calls; prints files with line numbers, bounded |
 | `bin/git-snap [dir]` | `git status` / `branch` / `log` / ahead-behind reconnaissance |
+| `bin/git-snap [dir] --worktrees` | `git worktree list` / per-worktree branch or detached HEAD / dirty-state reconnaissance |
+| `bin/change-snap [repo] [--base REF] [--patch-lines N]` | diff stat / name-status / whitespace check / staged and unstaged files / bounded patch |
+| `bin/pr-snap [repo] <pr-number|branch> [--patch-lines N]` | `gh pr view` / checks / reviews / changed files / bounded PR diff |
+| `bin/runtime-snap <cmd>...` | PATH lookup / resolved symlinks / bounded `--version` probes |
+| `bin/service-snap [--user] <unit> [--since TIME] [--lines N]` | `systemctl show` / status / recent journal; read-only, bounded |
 | `bin/log-triage <dir-or-glob> [--grep RE] [--fields a,b]` | `ls` → `head` → `python -c` log probing |
 | `bin/logscan <file|dir|glob>... [--where k=v] [--count k] [--fields a,b] [--grep RE]` | chains of `python3 -c` JSONL/transcript extraction one-liners |
 | `bin/gate-preflight [repo]` | `cat VERSION` / `jq .version` / `git log -1` / tag checks; prints every declared version, MATCH or MISMATCH (exit 1), and git state |
-| `calc/ntg-calc 'x=...; y=...; x+y'` | exact arithmetic in one call (`make -C calc`) |
-| `python/wf.py` | call the tools above from one Python script |
+| `bin/test-map-snap [repo] [--base REF] [--files a,b] [--lines N]` | `ls`/`find` test globs / `grep` for test references / bounded test-name excerpts; static and read-only, never runs tests |
+| `bin/run-cap [--tail N] [--dir PATH] [--] cmd args...` | large test/build/log output in the conversation; saves the full combined log and prints a bounded summary, preserving the command's exit code |
+
+`run-cap` executes arguments directly (use `sh -c` explicitly for shell syntax).
+Logs go to `--dir`, then `$RUN_CAP_DIR`, then `./.cap/` in the current directory.
+Add `.cap/` to your own repo's `.gitignore`. Each log has a UTC timestamp,
+sanitized command name and unique suffix; existing logs are never overwritten.
+Python 3 is required. The default summary is at most 19 lines: status/duration/
+line count, recognized test results, up to five deduplicated failure excerpts
+(each joined with two following context lines), an omitted-match count, the last
+10 lines and the full log path. `--tail 0` disables the tail; larger values expand
+it. Summary lines are clipped to 240 characters (960 for the combined result
+line); only the first 4096 non-NUL bytes of each physical line are scanned.
+The on-disk log is always byte-exact, including binary output and missing final
+newlines. Signals are forwarded to the command's process group and reported;
+signal termination exits with `128 + signal`.
 
 ## Why
 
-From the NTG calculator experiment (agy, gemini-3.8-flash-medium, Oct 2026):
-the model rarely computed anything itself; the gains came from bundling.
-With these tools hinted in the prompt, a two-file version check went from
-wrong in every run to 4/4 correct, and several tasks used 20-40% fewer
-input+cache tokens. Small sample, one model: directional evidence.
+The 128-run A/B study on gemini-3.8-flash-medium measured 20.7% fewer mean
+tokens with these tools hinted, or 27.5% fewer with rtk as well. Factual
+accuracy was equal across arms; final-answer completeness improved.
+One model and one fixture: directional evidence, not a universal saving.
+See [bench/RESULTS.md](bench/RESULTS.md) for task-level exceptions and raw data.
+
+The unused calculator and thin Python subprocess wrapper were removed.
+All five retained commands were actually used in the study. Historical
+calculator measurements remain in `bench/results/` as evidence.
 
 ## Tests
 
-    bash tests/test.sh      # ctx, git-snap, log-triage (107 assertions)
-    make -C calc test       # calculator (90 assertions)
+    bash tests/test.sh
+    node --test tests/benchmark.test.mjs
