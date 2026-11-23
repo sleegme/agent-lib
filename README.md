@@ -32,6 +32,35 @@ The on-disk log is always byte-exact, including binary output and missing final
 newlines. Signals are forwarded to the command's process group and reported;
 signal termination exits with `128 + signal`.
 
+## Install
+
+Runtime requirements: bash and coreutils everywhere; git for `git-snap`,
+`change-snap`, `pr-snap` and `test-map-snap`; python3 for `logscan`,
+`gate-preflight` and `run-cap`; the GitHub CLI (`gh`) for `pr-snap`;
+systemd (`systemctl`, `journalctl`) for `service-snap`.
+
+npm:
+
+    npm i -g @sleegme/agent-lib
+
+bun:
+
+    bun add -g @sleegme/agent-lib
+
+One-off, no global install (once the package is published):
+
+    npx -p @sleegme/agent-lib git-snap
+    bunx --package @sleegme/agent-lib git-snap
+
+From a checkout:
+
+    git clone https://github.com/sleegme/agent-lib
+    export PATH="$PWD/agent-lib/bin:$PATH"
+
+Every command lands on PATH (`ctx`, `git-snap`, `change-snap`, ...). See
+[docs/integrations.md](docs/integrations.md) for ready-to-paste instruction
+snippets for Claude Code, Codex CLI, OpenCode and any shell-capable agent.
+
 ## Why
 
 The 128-run A/B study on gemini-3.8-flash-medium measured 20.7% fewer mean
