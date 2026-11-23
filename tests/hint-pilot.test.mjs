@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { QUESTIONS, renderHints } from '../bench/hints.mjs';
+import { QUESTIONS, renderHints, selectHints } from '../bench/hints.mjs';
 import { attemptFailed, computePairs, formatMarkdown, summarizeResults } from '../bench/hint-summary.mjs';
 
 const execute = promisify(execFile);
@@ -73,13 +73,12 @@ process.exit(0);
           assert.equal(Buffer.byteLength(m.prompt, 'utf8'), m.promptBytes);
           assert.equal(Buffer.byteLength(m.hints, 'utf8'), m.hintBytes);
           assert.ok(m.promptBytes > m.hintBytes, 'promptBytes must exceed hintBytes');
-          if (m.mode === 'all') {
-            assert.equal(m.hintBytes, 719);
-          } else if (m.id === 'F1') {
-            assert.equal(m.hintBytes, 197);
-          } else if (m.id === 'F2') {
-            assert.equal(m.hintBytes, 241);
-          }
+          // Expected hints are computed from the real binDir: hint text
+          // legitimately embeds the checkout's absolute bin path, so pinned
+          // byte counts would only pass on the machine that wrote them.
+          const expectedHints = renderHints(selectHints(m.mode, QUESTIONS[m.id]), binDir);
+          assert.equal(m.hints, expectedHints, `entry ${entryIndex} hints`);
+          assert.equal(m.hintBytes, Buffer.byteLength(expectedHints, 'utf8'), `entry ${entryIndex} hintBytes`);
         }
       }
     }

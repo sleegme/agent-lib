@@ -38,8 +38,10 @@ This is release 0.1.0 of @sleegme/agent-lib (MIT).
 
 Runtime requirements: bash and coreutils everywhere; git for `git-snap`,
 `change-snap`, `pr-snap` and `test-map-snap`; python3 for `logscan`,
-`gate-preflight` and `run-cap`; the GitHub CLI (`gh`) for `pr-snap`;
-systemd (`systemctl`, `journalctl`) for `service-snap`.
+`gate-preflight`, `run-cap`, `pr-snap` and `log-triage` (log-triage's
+JSONL features need it; it degrades gracefully without python3); the
+GitHub CLI (`gh`) for `pr-snap`; systemd (`systemctl`, `journalctl`) for
+`service-snap`.
 
 npm:
 
