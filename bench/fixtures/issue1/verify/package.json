@@ -1,0 +1,8 @@
+{
+  "name": "verifixture",
+  "version": "0.3.0",
+  "scripts": {
+    "test": "node --test tests/",
+    "lint": "node tools/lint.js"
+  }
+}

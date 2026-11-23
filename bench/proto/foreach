@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# foreach (issue #1 prototype) -- run one command per selected target file,
+# print only the failures. Selection: changed vs a git base ref and/or a glob.
+#
+# usage: foreach [--base REF] [--glob GLOB] [--] CMD...
+#   --base REF   select files that differ from REF (git diff --name-only REF)
+#   --glob G     shell glob applied to the selection (relative paths)
+#   CMD          command executed once per target; '{}' is replaced by the
+#                file path; without '{}' the path is appended.
+# Prints: one "path: first error line" line per failing target, then a
+# "failed N/M" summary. Exit 1 if any target failed, 0 otherwise, 2 usage.
+set -u
+
+usage() {
+  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+  exit 2
+}
+
+base=""
+glob=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --base) [ $# -ge 2 ] || usage; base="$2"; shift 2 ;;
+    --glob) [ $# -ge 2 ] || usage; glob="$2"; shift 2 ;;
+    --) shift; break ;;
+    -h|--help) usage ;;
+    *) break ;;
+  esac
+done
+[ $# -ge 1 ] || usage
+
+if [ -n "$base" ]; then
+  # Read-only git access; tolerate a missing ref with a clear error.
+  files=$(git diff --name-only "$base" -- 2>/dev/null) || {
+    echo "foreach: git diff against '$base' failed" >&2; exit 2; }
+  # Keep only files that still exist (deleted paths cannot be processed).
+  files=$(printf '%s\n' "$files" | while IFS= read -r f; do
+    [ -f "$f" ] && printf '%s\n' "$f"
+  done)
+else
+  files=$(find . -type f -name '*' ! -path './.git/*' | sed 's|^\./||')
+fi
+
+if [ -n "$glob" ]; then
+  # shellcheck disable=SC2086
+  files=$(printf '%s\n' "$files" | while IFS= read -r f; do
+    case "$f" in $glob) printf '%s\n' "$f" ;; esac
+  done)
+fi
+
+total=0
+failed=0
+failmsg=""
+errtmp=$(mktemp)
+trap 'rm -f "$errtmp"' EXIT
+
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  total=$((total + 1))
+  # Token-wise {} substitution into an argv array: no eval, no quoting traps.
+  cmd=()
+  for arg in "$@"; do
+    if [ "$arg" = "{}" ]; then
+      cmd+=("$f")
+    else
+      case "$arg" in
+        *'{}'*) cmd+=("${arg//\{\}/$f}") ;;
+        *) cmd+=("$arg") ;;
+      esac
+    fi
+  done
+  if ! "${cmd[@]}" >/dev/null 2>"$errtmp"; then
+    failed=$((failed + 1))
+    err=$(head -n 3 "$errtmp" | tr '\n' ' ' | cut -c1-160)
+    failmsg="$failmsg$f: $err\n"
+  fi
+done <<EOF
+$files
+EOF
+
+if [ "$failed" -gt 0 ]; then
+  printf '%b' "$failmsg"
+  echo "failed $failed/$total"
+  exit 1
+fi
+echo "ok $total/$total"
+exit 0

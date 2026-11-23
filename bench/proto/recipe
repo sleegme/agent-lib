@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# recipe (issue #1 prototype) -- invoke a saved, parameterized operation once
+# instead of re-generating its command sequence every run.
+#
+# Recipes live in ./.agent-lib/recipes/<name>.recipe -- one command per line,
+# '#' comments allowed, '$param' substituted from --set / positional args.
+# Each step runs with its output captured; the printout is one line per step:
+#   "N. PASS <command>" or "N. FAIL <command> -> <first error/output line>".
+#
+# usage: recipe run <name> [param=value ...] (params also positional: recipe run name value)
+# Exit 0 all steps passed, 1 a step failed, 2 usage/unknown recipe.
+set -u
+
+usage() {
+  sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+  exit 2
+}
+
+[ "${1:-}" = "run" ] || usage
+name="${2:-}"
+[ -n "$name" ] || usage
+shift 2
+
+declare -A PARAMS
+positional=()
+for arg in "$@"; do
+  case "$arg" in
+    *=*) PARAMS["${arg%%=*}"]="${arg#*=}" ;;
+    *) positional+=("$arg") ;;
+  esac
+done
+i=0
+for v in "${positional[@]:-}"; do
+  [ -n "$v" ] || continue
+  PARAMS["$((i))"]="$v"
+  i=$((i + 1))
+done
+
+recipe="./.agent-lib/recipes/$name.recipe"
+[ -f "$recipe" ] || { echo "recipe: no such recipe: $name (looked in ./.agent-lib/recipes/)" >&2; exit 2; }
+
+failed=0
+n=0
+outtmp=$(mktemp)
+trap 'rm -f "$outtmp"' EXIT
+while IFS= read -r line; do
+  case "$line" in ''|'#'*) continue ;; esac
+  n=$((n + 1))
+  cmd="$line"
+  for k in "${!PARAMS[@]}"; do
+    cmd="${cmd//\$$k/${PARAMS[$k]}}"
+  done
+  # shellcheck disable=SC2086 -- intentional word splitting after substitution
+  if eval "$cmd" >"$outtmp" 2>&1; then
+    first=$(grep -m1 -v '^[[:space:]]*$' "$outtmp" | cut -c1-140)
+    if [ -n "$first" ]; then
+      echo "$n. PASS  $cmd"
+      echo "       out: $first"
+    else
+      echo "$n. PASS  $cmd"
+    fi
+  else
+    failed=1
+    first=$(grep -m1 -v '^[[:space:]]*$' "$outtmp" | cut -c1-140)
+    echo "$n. FAIL  $cmd -> ${first:-exit $?}"
+  fi
+done <"$recipe"
+
+exit "$failed"

@@ -1,0 +1,4 @@
+# Status report for one module. Parameters: $module
+node --test src/modules/$module
+node tools/lint.js src/modules/$module
+git log -1 --format=%s -- src/modules/$module

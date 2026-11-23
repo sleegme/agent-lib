@@ -1,0 +1,10 @@
+{
+  "name": "mixtool",
+  "version": "1.2.0",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test tests/",
+    "lint": "node tools/lint.js",
+    "build": "node tools/build.js"
+  }
+}

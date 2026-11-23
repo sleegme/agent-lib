@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""repo-map (issue #1 prototype) -- one-shot first-visit repository briefing.
+
+Prints a bounded, structured summary a fresh visitor needs:
+  ## tree        directory skeleton (depth/entry capped, junk skipped)
+  ## languages   file counts by extension
+  ## manifests   declared name/version/scripts from package.json,
+                pyproject.toml, Cargo.toml, go.mod when present
+  ## entrypoints main/module/bin fields, Makefile/default targets, CI workflows
+Read-only. Exit 0 unless the directory is missing (exit 1) or usage fails (2).
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from collections import Counter
+from pathlib import Path
+
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
+             "build", ".cache", ".cap", ".mypy_cache", ".pytest_cache"}
+MAX_ENTRIES = 120
+MAX_DEPTH = 3
+
+
+def bad(msg: str) -> None:
+    print(f"repo-map: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def tree(root: Path) -> tuple[list[str], Counter, set[str]]:
+    lines: list[str] = []
+    exts: Counter = Counter()
+    manifests: set[str] = set()
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel = Path(dirpath).relative_to(root)
+        depth = len(rel.parts)
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        if str(rel) != "." and count < MAX_ENTRIES:
+            lines.append("  " * (depth - 1) + rel.name + "/")
+            count += 1
+        for name in sorted(filenames):
+            f = rel / name if str(rel) != "." else Path(name)
+            if count < MAX_ENTRIES:
+                lines.append("  " * depth + "- " + name)
+            count += 1
+            suffix = Path(name).suffix.lower()
+            if suffix:
+                exts[suffix] += 1
+            if name in {"package.json", "pyproject.toml", "Cargo.toml",
+                        "go.mod", "Makefile"}:
+                manifests.add(str(f))
+        if depth >= MAX_DEPTH:
+            dirnames[:] = []
+    if count > MAX_ENTRIES:
+        lines.append(f"  ... {count - MAX_ENTRIES} more entries")
+    return lines, exts, manifests
+
+
+def main() -> None:
+    if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help")):
+        print("usage: repo-map [dir]")
+        sys.exit(0 if len(sys.argv) == 2 else 2)
+    root = Path(sys.argv[1]) if len(sys.argv) == 2 else Path.cwd()
+    if not root.is_dir():
+        print(f"repo-map: not a directory: {root}", file=sys.stderr)
+        sys.exit(1)
+
+    lines, exts, manifests = tree(root)
+    print("## tree")
+    for line in lines:
+        print(line)
+    print("## languages")
+    for ext, n in exts.most_common(8):
+        print(f"  {ext or '(none)'}: {n}")
+    print("## manifests")
+    for m in sorted(manifests):
+        p = root / m
+        try:
+            if p.name == "package.json":
+                d = json.loads(p.read_text())
+                scripts = d.get("scripts") or {}
+                print(f"  package.json name={d.get('name')} version={d.get('version')}")
+                for k in ("test", "lint", "build"):
+                    if k in scripts:
+                        print(f"    npm run {k} -> {scripts[k]}")
+                for k in ("main", "module", "bin"):
+                    if k in d:
+                        print(f"    {k}: {d[k]}")
+            else:
+                head = p.read_text(errors="replace").splitlines()[:6]
+                print(f"  {m}: " + " | ".join(h.strip() for h in head if h.strip()))
+        except (OSError, ValueError) as exc:
+            print(f"  {m}: unreadable ({exc})")
+    ci = root / ".github" / "workflows"
+    if ci.is_dir():
+        print("## entrypoints")
+        for w in sorted(ci.glob("*.yml"))[:5]:
+            print(f"  CI: {w.relative_to(root)}")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

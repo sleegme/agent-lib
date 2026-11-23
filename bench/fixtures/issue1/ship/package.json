@@ -1,0 +1,7 @@
+{
+  "name": "shipfix",
+  "version": "2.4.1",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}

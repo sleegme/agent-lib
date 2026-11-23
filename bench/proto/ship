@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""ship (issue #1 prototype) -- release preflight, one structured verdict.
+
+ship --plan performs, without tagging/publishing/deploying anything:
+  version    every declared version (VERSION, package.json, pyproject...) equal?
+  changelog  does CHANGELOG.md mention the current version?
+  tests      do the repo's declared test checks pass? (via verify)
+  tree       is the working tree clean (no staged/unstaged/untracked)?
+Prints one line per check plus GO or NO-GO. Dry-run only by construction.
+
+usage: ship --plan [dir]
+Exit 0 GO, 1 NO-GO, 2 usage.
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+def usage() -> None:
+    print(__doc__.strip())
+    sys.exit(2)
+
+
+def declared_versions(root: Path) -> dict[str, str]:
+    v: dict[str, str] = {}
+    ver = root / "VERSION"
+    if ver.is_file():
+        v["VERSION"] = ver.read_text().strip()
+    pkg = root / "package.json"
+    if pkg.is_file():
+        try:
+            v["package.json"] = json.loads(pkg.read_text()).get("version", "")
+        except ValueError:
+            v["package.json"] = "<unreadable>"
+    py = root / "pyproject.toml"
+    if py.is_file():
+        m = re.search(r'version\s*=\s*"([^"]+)"', py.read_text(errors="replace"))
+        if m:
+            v["pyproject.toml"] = m.group(1)
+    return v
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args or args[0] != "--plan":
+        usage()
+    args = args[1:]
+    if len(args) > 1 or (args and args[0] in ("-h", "--help")):
+        usage()
+    root = Path(args[0]) if args else Path.cwd()
+    if not root.is_dir():
+        print(f"ship: not a directory: {root}", file=sys.stderr)
+        sys.exit(1)
+
+    problems: list[str] = []
+
+    versions = declared_versions(root)
+    if not versions:
+        print("version: no declared versions found")
+        problems.append("no declared versions")
+    elif len(set(versions.values())) > 1:
+        detail = " ".join(f"{k}={v}" for k, v in sorted(versions.items()))
+        print(f"version: MISMATCH ({detail})")
+        problems.append("version-mismatch")
+    else:
+        print(f"version: MATCH ({next(iter(versions.values()))})")
+    # The "current" release version: package.json is canonical when present.
+    current = versions.get("package.json") or next(iter(versions.values()), "")
+
+    changelog = root / "CHANGELOG.md"
+    if not changelog.is_file():
+        print("changelog: MISSING CHANGELOG.md")
+        problems.append("changelog-missing-file")
+    elif current and current not in changelog.read_text(errors="replace"):
+        print(f"changelog: no entry for {current}")
+        problems.append("changelog-missing-entry")
+    else:
+        print(f"changelog: entry for {current} present")
+
+    vfy = root.parent / "proto" / "verify"
+    if not vfy.exists():
+        vfy = Path(__file__).with_name("verify")
+    p = subprocess.run([sys.executable, str(vfy)], cwd=root,
+                       capture_output=True, text=True, timeout=600)
+    print(p.stdout.rstrip())
+    for line in p.stdout.splitlines():
+        if ": FAIL" in line or ": FAIL" in line:
+            problems.append("tests-fail" if line.startswith("test") else
+                            "lint-fail" if line.startswith("lint") else "build-fail")
+
+    git = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                         capture_output=True, text=True)
+    if git.returncode != 0:
+        print("tree: not a git repository")
+        problems.append("no-git")
+    elif git.stdout.strip():
+        n = len(git.stdout.strip().splitlines())
+        print(f"tree: DIRTY ({n} changed/untracked)")
+        problems.append("dirty-tree")
+    else:
+        print("tree: clean")
+
+    if problems:
+        print(f"NO-GO: " + ", ".join(problems))
+        sys.exit(1)
+    print("GO: all checks passed")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
