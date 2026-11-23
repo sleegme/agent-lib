@@ -1,0 +1,37 @@
+{
+  "name": "@sleegme/agent-lib",
+  "version": "0.1.0",
+  "description": "Bundled tools that cut agent token use",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sleegme/agent-lib.git"
+  },
+  "homepage": "https://github.com/sleegme/agent-lib#readme",
+  "bugs": "https://github.com/sleegme/agent-lib/issues",
+  "bin": {
+    "ctx": "bin/ctx",
+    "git-snap": "bin/git-snap",
+    "change-snap": "bin/change-snap",
+    "pr-snap": "bin/pr-snap",
+    "runtime-snap": "bin/runtime-snap",
+    "service-snap": "bin/service-snap",
+    "log-triage": "bin/log-triage",
+    "logscan": "bin/logscan",
+    "gate-preflight": "bin/gate-preflight",
+    "test-map-snap": "bin/test-map-snap",
+    "run-cap": "bin/run-cap"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE",
+    "docs/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "bash tests/test.sh && node --test tests/"
+  }
+}
