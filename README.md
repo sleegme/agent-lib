@@ -56,3 +56,7 @@ the regression suite instead. Historical calculator measurements remain in
 
 The node command runs every suite in tests/ (`benchmark.test.mjs`,
 `hints.test.mjs`, `hint-pilot.test.mjs`).
+
+## License
+
+MIT. See the [LICENSE](LICENSE) file.
