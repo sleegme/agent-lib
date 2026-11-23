@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# change-snap -- one-shot repository change snapshot for an agent.
+set -u
+# Inspection must not refresh or lock the repository index.
+export GIT_OPTIONAL_LOCKS=0
+
+usage() {
+    cat <<'EOF'
+usage: change-snap [repo-dir] [--base REF] [--patch-lines N]
+
+Print a compact snapshot of changes in a repository (default: current directory)
+with one "## title" section per area:
+
+  ## repo                 work tree root
+  ## range                comparison range (base...HEAD or working tree)
+  ## stat                 diff --stat summary
+  ## name-status          diff --name-status file list
+  ## check                whitespace / conflict check
+  ## staged               staged files (--cached --name-only)
+  ## unstaged             unstaged files (--name-only)
+  ## patch                unified diff (capped at patch-lines)
+
+Options:
+  --base REF              base reference for comparison (default: working tree)
+  --patch-lines N         maximum lines of patch to display (default: 200)
+  -h, --help              show this help and exit
+
+Exit status: 0 on success (including whitespace findings), 1 when input
+is missing or a git lookup fails, 2 on usage error.
+EOF
+}
+
+dir=""
+base=""
+patch_lines=200
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --base)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                printf 'change-snap: --base requires a non-empty argument\n' >&2
+                usage >&2
+                exit 2
+            fi
+            base="$2"
+            shift 2
+            ;;
+        --base=*)
+            base="${1#*=}"
+            if [ -z "$base" ]; then
+                printf 'change-snap: --base requires a non-empty argument\n' >&2
+                usage >&2
+                exit 2
+            fi
+            shift
+            ;;
+        --patch-lines)
+            if [ "$#" -lt 2 ]; then
+                printf 'change-snap: --patch-lines requires an argument\n' >&2
+                usage >&2
+                exit 2
+            fi
+            patch_lines="$2"
+            shift 2
+            ;;
+        --patch-lines=*)
+            patch_lines="${1#*=}"
+            shift
+            ;;
+        -*)
+            printf 'change-snap: unknown option: %s\n' "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            if [ -n "$dir" ]; then
+                printf 'change-snap: unexpected extra argument: %s\n' "$1" >&2
+                usage >&2
+                exit 2
+            fi
+            dir="$1"
+            shift
+            ;;
+    esac
+done
+
+if ! [[ "$patch_lines" =~ ^[0-9]+$ ]] || [ "$patch_lines" -le 0 ]; then
+    printf 'change-snap: --patch-lines must be a positive integer: %s\n' "$patch_lines" >&2
+    usage >&2
+    exit 2
+fi
+
+if [ -z "$dir" ]; then
+    dir=.
+fi
+
+if [ ! -d "$dir" ]; then
+    printf 'change-snap: %s: no such directory\n' "$dir" >&2
+    exit 1
+fi
+if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'change-snap: %s: not a git repository\n' "$dir" >&2
+    exit 1
+fi
+
+g() { git --no-pager -C "$dir" "$@"; }
+
+printf '## repo\n'
+if ! root=$(g rev-parse --show-toplevel 2>/dev/null); then
+    printf 'change-snap: git rev-parse --show-toplevel lookup failed\n' >&2
+    exit 1
+fi
+printf '%s\n' "$root"
+
+if [ -n "$base" ]; then
+    if ! mb=$(g merge-base "$base" HEAD 2>/dev/null); then
+        printf 'change-snap: %s: merge-base lookup failed against HEAD\n' "$base" >&2
+        exit 1
+    fi
+    printf '## range\n'
+    printf '%s...HEAD (merge-base %s)\n' "$base" "$mb"
+    diff_range=("$base...HEAD")
+else
+    printf '## range\n'
+    printf 'working tree\n'
+    if ! g rev-parse --verify -q HEAD >/dev/null 2>&1; then
+        printf 'change-snap: git rev-parse --verify -q HEAD lookup failed\n' >&2
+        exit 1
+    fi
+    diff_range=("HEAD")
+fi
+
+# git diff's stat-only refresh can write despite GIT_OPTIONAL_LOCKS=0.
+# Keep its content filtering, but confine any refresh to a private index.
+if ! index_path=$(g rev-parse --path-format=absolute --git-path index 2>/dev/null); then
+    printf 'change-snap: git index lookup failed\n' >&2
+    exit 1
+fi
+if ! snapshot_dir=$(mktemp -d); then
+    printf 'change-snap: cannot create temporary index directory\n' >&2
+    exit 1
+fi
+trap 'rm -rf -- "$snapshot_dir"' EXIT
+if ! cp -- "$index_path" "$snapshot_dir/index" 2>/dev/null; then
+    printf 'change-snap: cannot read repository index\n' >&2
+    exit 1
+fi
+export GIT_INDEX_FILE="$snapshot_dir/index"
+
+printf '## stat\n'
+if ! stat_out=$(g diff --stat "${diff_range[@]}" 2>/dev/null); then
+    printf 'change-snap: git diff --stat lookup failed\n' >&2
+    exit 1
+fi
+if [ -z "$stat_out" ]; then
+    printf '(none)\n'
+else
+    printf '%s\n' "$stat_out"
+fi
+
+printf '## name-status\n'
+if ! ns_out=$(g diff --name-status "${diff_range[@]}" 2>/dev/null); then
+    printf 'change-snap: git diff --name-status lookup failed\n' >&2
+    exit 1
+fi
+if [ -z "$ns_out" ]; then
+    printf '(none)\n'
+else
+    printf '%s\n' "$ns_out"
+fi
+
+printf '## check\n'
+check_out=$(g diff --check "${diff_range[@]}" 2>/dev/null)
+check_rc=$?
+# diff --check returns 2 for whitespace/conflict findings on stdout.
+if [ "$check_rc" -ne 0 ] && { [ "$check_rc" -ne 2 ] || [ -z "$check_out" ]; }; then
+    printf 'change-snap: git diff --check lookup failed\n' >&2
+    exit 1
+fi
+if [ -z "$check_out" ]; then
+    printf 'clean\n'
+else
+    printf '%s\n' "$check_out"
+fi
+
+printf '## staged\n'
+if ! staged_out=$(g diff --cached --name-only 2>/dev/null); then
+    printf 'change-snap: git diff --cached --name-only lookup failed\n' >&2
+    exit 1
+fi
+if [ -z "$staged_out" ]; then
+    printf '(none)\n'
+else
+    printf '%s\n' "$staged_out"
+fi
+
+printf '## unstaged\n'
+if ! unstaged_out=$(g diff --name-only 2>/dev/null); then
+    printf 'change-snap: git diff --name-only lookup failed\n' >&2
+    exit 1
+fi
+if [ -z "$unstaged_out" ]; then
+    printf '(none)\n'
+else
+    printf '%s\n' "$unstaged_out"
+fi
+
+printf '## patch\n'
+if ! patch_out=$(g diff -p "${diff_range[@]}" 2>/dev/null); then
+    printf 'change-snap: git diff -p lookup failed\n' >&2
+    exit 1
+fi
+if [ -z "$patch_out" ]; then
+    printf '(none)\n'
+else
+    total_lines=$(printf '%s\n' "$patch_out" | wc -l)
+    if [ "$total_lines" -le "$patch_lines" ]; then
+        printf '%s\n' "$patch_out"
+    else
+        printf '%s\n' "$patch_out" | head -n "$patch_lines"
+        truncated_count=$((total_lines - patch_lines))
+        printf '... truncated, %d more lines\n' "$truncated_count"
+    fi
+fi
+
+exit 0

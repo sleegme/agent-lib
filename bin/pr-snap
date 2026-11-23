@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# pr-snap -- read-only pull request snapshot for an agent.
+set -u
+# gh can invoke git while resolving the local repository.
+export GIT_OPTIONAL_LOCKS=0
+
+usage() {
+    cat <<'EOF'
+usage: pr-snap [repo-dir] <pr-number|branch> [--patch-lines N]
+
+Print ## pr, ## checks, ## reviews, ## files (max 50), and ## patch using
+read-only gh commands. The repository defaults to the current directory.
+
+Options:
+  --patch-lines N  maximum patch lines (default: 160)
+  -h, --help       show this help and exit
+
+Requires gh and python3. Exit status: 0 on success, 1 on missing input or
+failed lookup (including missing gh or authentication), 2 on usage error.
+EOF
+}
+
+args=()
+patch_lines=160
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --patch-lines)
+            if [ "$#" -lt 2 ]; then
+                printf 'pr-snap: --patch-lines requires an argument\n' >&2
+                exit 2
+            fi
+            patch_lines=$2
+            shift 2
+            ;;
+        --patch-lines=*) patch_lines=${1#*=}; shift ;;
+        -*) printf 'pr-snap: unknown option: %s\n' "$1" >&2; exit 2 ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+if [ "${#args[@]}" -lt 1 ] || [ "${#args[@]}" -gt 2 ]; then
+    usage >&2
+    exit 2
+fi
+if ! [[ "$patch_lines" =~ ^[0-9]+$ ]] || [ "$patch_lines" -le 0 ]; then
+    printf 'pr-snap: --patch-lines must be a positive integer\n' >&2
+    exit 2
+fi
+dir=.
+pr=${args[0]}
+if [ "${#args[@]}" -eq 2 ]; then
+    dir=${args[0]}
+    pr=${args[1]}
+fi
+if [[ "$pr" == -* ]] || [ -z "$pr" ]; then
+    printf 'pr-snap: expected a PR number or branch\n' >&2
+    exit 2
+fi
+if ! cd -- "$dir" 2>/dev/null; then
+    printf 'pr-snap: %s: no such directory\n' "$dir" >&2
+    exit 1
+fi
+for cmd in gh python3; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        printf 'pr-snap: %s: not found\n' "$cmd" >&2
+        exit 1
+    fi
+done
+
+# Do not echo gh diagnostics: authentication errors may contain credentials.
+if ! data=$(gh pr view "$pr" --json number,title,state,author,baseRefName,headRefName,url,mergeable,mergeStateStatus,reviewDecision,reviews,files 2>/dev/null); then
+    printf 'pr-snap: PR lookup failed (not found or unauthenticated)\n' >&2
+    exit 1
+fi
+# name,state,bucket are the fixed gh pr checks --json fields. Failed/pending
+# checks return nonzero even when their JSON is a successful lookup.
+checks=$(gh pr checks "$pr" --json name,state,bucket 2>&1)
+checks_rc=$?
+case "$checks_rc" in
+    0|1|8) ;;
+    *) printf 'pr-snap: checks lookup failed (check gh authentication)\n' >&2; exit 1 ;;
+esac
+if [ "$checks_rc" -eq 1 ] && [[ "$checks" == "no checks reported"* ]]; then
+    checks='[]'
+fi
+if ! patch=$(gh pr diff "$pr" --color never 2>/dev/null); then
+    printf 'pr-snap: patch lookup failed (not found or unauthenticated)\n' >&2
+    exit 1
+fi
+
+python3 - "$patch_lines" 3<<<"$data" 4<<<"$checks" 5<<<"$patch" <<'PY'
+import json
+import os
+import sys
+
+try:
+    with os.fdopen(3) as fh:
+        pr = json.load(fh)
+    with os.fdopen(4) as fh:
+        checks = json.load(fh)
+    if not isinstance(pr, dict) or not isinstance(checks, list):
+        raise ValueError("unexpected JSON")
+except ValueError:
+    print("pr-snap: invalid PR/checks response (lookup failed)", file=sys.stderr)
+    sys.exit(1)
+
+
+def line(value):
+    return str(value or "").split("\n", 1)[0].replace("\r", "")
+
+
+print("## pr")
+print(f'#{pr["number"]} {line(pr["title"])}')
+print(f'state: {line(pr["state"])}')
+print(f'author: {line((pr.get("author") or {}).get("login", "unknown"))}')
+print(f'{line(pr["baseRefName"])} <- {line(pr["headRefName"])}')
+for key in ("url", "mergeable", "mergeStateStatus", "reviewDecision"):
+    print(f'{key}: {line(pr.get(key))}')
+print("## checks")
+for check in checks:
+    print(f'{line(check["name"])} {line(check["state"])}/{line(check["bucket"])}')
+if not checks:
+    print("none")
+print("## reviews")
+reviews = pr.get("reviews") or []
+for review in reviews[:50]:
+    author = (review.get("author") or {}).get("login", "unknown")
+    print(f'{line(author)} {line(review["state"])} {line(review.get("body"))}')
+if not reviews:
+    print("none")
+elif len(reviews) > 50:
+    print(f"... {len(reviews) - 50} more reviews")
+print("## files")
+files = pr.get("files") or []
+for file in files[:50]:
+    print(f'{line(file["path"])} +{file["additions"]} -{file["deletions"]}')
+if not files:
+    print("none")
+elif len(files) > 50:
+    print(f"... {len(files) - 50} more files")
+print("## patch")
+with os.fdopen(5) as fh:
+    patch = fh.read().rstrip("\n").splitlines()
+limit = int(sys.argv[1])
+print("\n".join(patch[:limit]) if patch else "none")
+if len(patch) > limit:
+    print(f"... truncated, {len(patch) - limit} more lines")
+PY
