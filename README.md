@@ -34,6 +34,8 @@ signal termination exits with `128 + signal`.
 
 ## Install
 
+This is release 0.1.0 of @sleegme/agent-lib (MIT).
+
 Runtime requirements: bash and coreutils everywhere; git for `git-snap`,
 `change-snap`, `pr-snap` and `test-map-snap`; python3 for `logscan`,
 `gate-preflight` and `run-cap`; the GitHub CLI (`gh`) for `pr-snap`;
