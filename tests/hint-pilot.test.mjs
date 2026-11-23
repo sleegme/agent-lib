@@ -15,6 +15,26 @@ const TAIL = '\nDo not modify any files. End your reply with a final line: ANSWE
 const PROTOCOL_STOPWORDS =
   'a an and are as at be by do does for from given how in is it of on or repo s that the this to under what when which with you your'.split(' ');
 
+// Golden hint renderings, independent of renderHints itself: the heading and
+// every tool line are literals, with the checkout-specific binDir masked as
+// <BIN> so the expectations hold at any clone path while a renderer that
+// returns empty or malformed text still fails the assertions below.
+const GOLDEN_HEADING = '\nHelpful commands you can run with your command tool (each does in ONE call what usually takes several):\n';
+const GOLDEN_LINE = {
+  ctx: '- <BIN>/ctx <file>...  show several files with line numbers at once',
+  'git-snap': '- <BIN>/git-snap  branch, ahead/behind, status, recent commits at once',
+  'gate-preflight': '- <BIN>/gate-preflight  every declared version (VERSION, package.json, ...) with MATCH/MISMATCH, plus git state',
+  'log-triage': '- <BIN>/log-triage <dir-or-glob> [--grep RE] [--fields key]  newest log summary, grep count, JSONL field counts',
+  logscan: '- <BIN>/logscan <file|dir|glob> [--where k=v] [--count key] [--fields a,b] [--grep RE]  filter/count/extract JSONL in one call',
+};
+const GOLDEN_HINTS = {
+  all: GOLDEN_HEADING + ['ctx', 'git-snap', 'gate-preflight', 'log-triage', 'logscan'].map(id => GOLDEN_LINE[id]).join('\n'),
+  'rules:F1': GOLDEN_HEADING + GOLDEN_LINE.ctx,
+  'rules:F2': GOLDEN_HEADING + GOLDEN_LINE['gate-preflight'],
+  'bm25:F1': GOLDEN_HEADING + GOLDEN_LINE.ctx,
+  'bm25:F2': GOLDEN_HEADING + GOLDEN_LINE['gate-preflight'],
+};
+
 test('dry-run: 18 rotated entries, full prompt text and selector settings in manifest, agy version null, no spawned process', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'hint-pilot-dryrun-'));
   try {
@@ -73,12 +93,18 @@ process.exit(0);
           assert.equal(Buffer.byteLength(m.prompt, 'utf8'), m.promptBytes);
           assert.equal(Buffer.byteLength(m.hints, 'utf8'), m.hintBytes);
           assert.ok(m.promptBytes > m.hintBytes, 'promptBytes must exceed hintBytes');
-          // Expected hints are computed from the real binDir: hint text
-          // legitimately embeds the checkout's absolute bin path, so pinned
-          // byte counts would only pass on the machine that wrote them.
-          const expectedHints = renderHints(selectHints(m.mode, QUESTIONS[m.id]), binDir);
-          assert.equal(m.hints, expectedHints, `entry ${entryIndex} hints`);
-          assert.equal(m.hintBytes, Buffer.byteLength(expectedHints, 'utf8'), `entry ${entryIndex} hintBytes`);
+          // Structural assertions plus the literal goldens above: the oracle
+          // is no longer recomputed through the selectHints+renderHints chain
+          // the CLI uses, so a rendering regression fails here.
+          const expectedIds = selectHints(m.mode, QUESTIONS[m.id]);
+          assert.ok(m.hints.length > 0, `entry ${entryIndex} hints non-empty`);
+          assert.ok(m.hintBytes > 0, `entry ${entryIndex} hintBytes positive`);
+          assert.ok(m.hints.startsWith(GOLDEN_HEADING), `entry ${entryIndex} hints start with the golden heading`);
+          for (const id of expectedIds) {
+            assert.ok(m.hints.includes(`${binDir}/${id}`), `entry ${entryIndex} hints contain ${id} under binDir`);
+          }
+          const goldenKey = m.mode === 'all' ? 'all' : `${m.mode}:${m.id}`;
+          assert.equal(m.hints.split(binDir).join('<BIN>'), GOLDEN_HINTS[goldenKey], `entry ${entryIndex} golden hint rendering`);
         }
       }
     }
