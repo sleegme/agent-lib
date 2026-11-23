@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""repo-map -- one-shot first-visit repository briefing for agents.
+
+usage: repo-map [dir]
+
+Prints a bounded, sectioned summary of what a fresh visitor needs:
+
+  ## tree        directory skeleton (depth and entry capped, junk skipped)
+  ## languages   file counts by extension (top 8)
+  ## manifests   name/version/scripts from package.json when present, plus
+                the first lines of pyproject.toml / Cargo.toml / go.mod /
+                Makefile when present
+  ## entrypoints declared main/module/bin fields and CI workflow files
+
+Replaces the ls/find/cat package.json probing chain with one call.
+Read-only. Exit status: 0 on success, 1 when the directory is missing,
+2 on usage errors.
+"""
+import json
+import os
+import sys
+from collections import Counter
+from pathlib import Path
+
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist",
+             "build", ".cache", ".cap", ".mypy_cache", ".pytest_cache",
+             "target"}
+MAX_ENTRIES = 120
+MAX_DEPTH = 3
+MANIFESTS = {"package.json", "pyproject.toml", "Cargo.toml", "go.mod", "Makefile"}
+
+
+def usage() -> None:
+    print(__doc__.strip())
+    sys.exit(0 if sys.argv[1:] and sys.argv[1] in ("-h", "--help") else 2)
+
+
+def tree(root: Path) -> tuple[list[str], Counter, set[str]]:
+    lines: list[str] = []
+    exts: Counter = Counter()
+    manifests: set[str] = set()
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel = Path(dirpath).relative_to(root)
+        depth = len(rel.parts)
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        if str(rel) != "." and count < MAX_ENTRIES:
+            lines.append("  " * (depth - 1) + rel.name + "/")
+            count += 1
+        for name in sorted(filenames):
+            f = rel / name if str(rel) != "." else Path(name)
+            if count < MAX_ENTRIES:
+                lines.append("  " * depth + "- " + name)
+            count += 1
+            suffix = Path(name).suffix.lower()
+            if suffix:
+                exts[suffix] += 1
+            if name in MANIFESTS:
+                manifests.add(str(f))
+        if depth >= MAX_DEPTH:
+            dirnames[:] = []
+    if count > MAX_ENTRIES:
+        lines.append(f"  ... {count - MAX_ENTRIES} more entries")
+    return lines, exts, manifests
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if len(args) > 1 or (args and args[0] in ("-h", "--help")):
+        usage()
+    root = Path(args[0]) if args else Path.cwd()
+    if not root.is_dir():
+        print(f"repo-map: not a directory: {root}", file=sys.stderr)
+        sys.exit(1)
+
+    print("## repo")
+    print(root)
+    lines, exts, manifests = tree(root)
+    print("## tree")
+    for line in lines:
+        print(line)
+    print("## languages")
+    for ext, n in exts.most_common(8):
+        print(f"  {ext or '(none)'}: {n}")
+    print("## manifests")
+    for m in sorted(manifests):
+        p = root / m
+        try:
+            if p.name == "package.json":
+                d = json.loads(p.read_text())
+                scripts = d.get("scripts") or {}
+                print(f"  package.json name={d.get('name')} version={d.get('version')}")
+                for k in ("test", "lint", "build"):
+                    if k in scripts:
+                        print(f"    npm run {k} -> {scripts[k]}")
+                for k in ("main", "module", "bin"):
+                    if k in d:
+                        print(f"    {k}: {d[k]}")
+            else:
+                head = p.read_text(errors="replace").splitlines()[:6]
+                print(f"  {m}: " + " | ".join(h.strip() for h in head if h.strip()))
+        except (OSError, ValueError) as exc:
+            print(f"  {m}: unreadable ({exc})")
+    print("## entrypoints")
+    ci = root / ".github" / "workflows"
+    if ci.is_dir():
+        for w in sorted(ci.glob("*.yml"))[:5]:
+            print(f"  CI: {w.relative_to(root)}")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

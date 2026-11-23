@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""ship --plan -- release preflight: one structured GO/NO-GO, dry-run only.
+
+usage: ship --plan [dir]
+
+Performs, without tagging/committing/publishing/deploying anything:
+  version    every declared version (VERSION, package.json, pyproject.toml)
+             equal? MISMATCH names the files and values
+  changelog  does CHANGELOG.md mention the current version?
+  checks     the repo's declared test/lint/build checks via verify (RUNS them)
+  tree       is the working tree clean (no staged/unstaged/untracked)?
+Prints one line per check plus "GO: all checks passed" or
+"NO-GO: <comma-separated failed checks>".
+
+--plan is the only mode: ship never mutates the repository itself and has
+no publish/deploy path. The checks it invokes run the repo's own commands,
+with whatever side effects those commands have.
+
+Exit status: 0 GO, 1 NO-GO, 2 usage errors.
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+def usage() -> None:
+    print(__doc__.strip())
+    code = 0 if "--help" in sys.argv[1:] or "-h" in sys.argv[1:] else 2
+    sys.exit(code)
+
+
+def declared_versions(root: Path) -> dict[str, str]:
+    v: dict[str, str] = {}
+    ver = root / "VERSION"
+    if ver.is_file():
+        v["VERSION"] = ver.read_text(errors="replace").strip()
+    pkg = root / "package.json"
+    if pkg.is_file():
+        try:
+            v["package.json"] = str(json.loads(pkg.read_text()).get("version", ""))
+        except ValueError:
+            v["package.json"] = "<unreadable>"
+    py = root / "pyproject.toml"
+    if py.is_file():
+        m = re.search(r'version\s*=\s*"([^"]+)"', py.read_text(errors="replace"))
+        if m:
+            v["pyproject.toml"] = m.group(1)
+    return v
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args or args[0] != "--plan":
+        usage()
+    args = args[1:]
+    if len(args) > 1 or (args and args[0] in ("-h", "--help")):
+        usage()
+    root = Path(args[0]) if args else Path.cwd()
+    if not root.is_dir():
+        print(f"ship: not a directory: {root}", file=sys.stderr)
+        sys.exit(1)
+
+    problems: list[str] = []
+
+    versions = declared_versions(root)
+    if not versions:
+        print("version: no declared versions found")
+        problems.append("no-declared-versions")
+    elif len(set(versions.values())) > 1:
+        detail = " ".join(f"{k}={v}" for k, v in sorted(versions.items()))
+        print(f"version: MISMATCH ({detail})")
+        problems.append("version-mismatch")
+    else:
+        print(f"version: MATCH ({next(iter(versions.values()))})")
+    current = versions.get("package.json") or next(iter(versions.values()), "")
+
+    changelog = root / "CHANGELOG.md"
+    if not changelog.is_file():
+        print("changelog: MISSING CHANGELOG.md")
+        problems.append("changelog-missing-file")
+    elif not current:
+        print("changelog: unknown current version")
+        problems.append("changelog-unknown-version")
+    elif current not in changelog.read_text(errors="replace"):
+        print(f"changelog: no entry for {current}")
+        problems.append("changelog-missing-entry")
+    else:
+        print(f"changelog: entry for {current} present")
+
+    vfy = Path(__file__).resolve().with_name("verify")
+    if vfy.is_file():
+        try:
+            p = subprocess.run([sys.executable, str(vfy)], cwd=root,
+                               capture_output=True, text=True, timeout=600)
+            print(p.stdout.rstrip())
+            for line in p.stdout.splitlines():
+                if ": FAIL" in line:
+                    kind = line.split(":", 1)[0]
+                    problems.append(f"{kind}-fail")
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            print(f"checks: FAIL could not run verify ({exc})")
+            problems.append("checks-error")
+    else:
+        print("checks: SKIPPED (verify tool not found next to ship)")
+
+    git = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                         capture_output=True, text=True)
+    if git.returncode != 0:
+        print("tree: not a git repository")
+        problems.append("no-git")
+    elif git.stdout.strip():
+        n = len(git.stdout.strip().splitlines())
+        print(f"tree: DIRTY ({n} changed/untracked)")
+        problems.append("dirty-tree")
+    else:
+        print("tree: clean")
+
+    if problems:
+        print("NO-GO: " + ", ".join(problems))
+        sys.exit(1)
+    print("GO: all checks passed")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

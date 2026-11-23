@@ -20,7 +20,11 @@
     "logscan": "bin/logscan",
     "gate-preflight": "bin/gate-preflight",
     "test-map-snap": "bin/test-map-snap",
-    "run-cap": "bin/run-cap"
+    "run-cap": "bin/run-cap",
+    "repo-map": "bin/repo-map",
+    "verify": "bin/verify",
+    "recipe": "bin/recipe",
+    "ship": "bin/ship"
   },
   "files": [
     "bin/",

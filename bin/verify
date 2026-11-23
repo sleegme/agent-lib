@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""verify -- run the repo's declared checks, print one compact verdict.
+
+usage: verify [dir]
+
+Discovers test/lint/build commands from package.json scripts (npm run) or
+Makefile targets, runs each with output captured, and prints one line per
+check: "kind: PASS" or "kind: FAIL -> failing test names / lint files /
+first error line". Unlike test-map-snap this RUNS the discovered commands;
+they execute with the repo's own side effects.
+
+Exit status: 0 when every discovered check passes, 1 when any fails,
+2 on usage errors or when no checks are discovered.
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+TIMEOUT = 240
+
+
+def usage() -> None:
+    print(__doc__.strip())
+    sys.exit(0 if sys.argv[1:] and sys.argv[1] in ("-h", "--help") else 2)
+
+
+def discover(root: Path) -> dict[str, list[str]]:
+    checks: dict[str, list[str]] = {}
+    pkg = root / "package.json"
+    if pkg.is_file():
+        try:
+            scripts = (json.loads(pkg.read_text()).get("scripts") or {})
+        except ValueError:
+            scripts = {}
+        for kind in ("test", "lint", "build"):
+            if kind in scripts:
+                checks[kind] = ["npm", "run", "--silent", kind]
+    mf = root / "Makefile"
+    if mf.is_file():
+        text = mf.read_text(errors="replace")
+        for kind, target in (("test", "test"), ("lint", "lint"), ("build", "all")):
+            if kind not in checks and re.search(rf"^{target}:", text, re.M):
+                checks[kind] = ["make", "-s", target]
+    return checks
+
+
+def extract_failures(kind: str, out: str) -> list[str]:
+    fails: list[str] = []
+    junk = re.compile(r"^(failing tests:?|# (?:tests|pass|fail|failed)\b.*)$", re.I)
+
+    def clean(name: str) -> str:
+        return re.sub(r"\s+\([\d.]+m?s\)$", "", name.strip())
+
+    if kind == "test":
+        # node:test / jest / TAP style failing test titles.
+        for m in re.finditer(r"^[^\w]*[fx]?\s*(?:✖|×|FAIL|not ok)\s+\d*\s*-?\s*(.+)$",
+                             out, re.M):
+            name = clean(m.group(1))
+            if name and not junk.match(name) and name not in fails:
+                fails.append(name)
+        for m in re.finditer(r"^\s*FAIL\s+(\S+)$", out, re.M):
+            name = clean(m.group(1))
+            if name and not junk.match(name) and name not in fails:
+                fails.append(name)
+    elif kind == "lint":
+        for m in re.finditer(r"^(\S+:\d+:\d+):\s+error", out, re.M):
+            f = m.group(1).rsplit(":", 2)[0]
+            if f not in fails:
+                fails.append(f)
+        for m in re.finditer(r"^Lint issue in\s+(\S+)", out, re.M):
+            f = m.group(1).rstrip(":")
+            if f not in fails:
+                fails.append(f)
+    else:
+        for m in re.finditer(r"^error(?: \w+)?:\s+(.{10,120})", out, re.M):
+            if m.group(1) not in fails:
+                fails.append(m.group(1))
+    return fails[:10]
+
+
+def main() -> None:
+    args = [a for a in sys.argv[1:] if a not in ("-h", "--help")]
+    if len(sys.argv[1:]) > 1 or (sys.argv[1:] and sys.argv[1] in ("-h", "--help")):
+        usage()
+    root = Path(args[0]) if args else Path.cwd()
+    if not root.is_dir():
+        print(f"verify: not a directory: {root}", file=sys.stderr)
+        sys.exit(1)
+
+    checks = discover(root)
+    if not checks:
+        print("verify: no test/lint/build commands discovered "
+              "(no package.json scripts, no Makefile targets)")
+        sys.exit(2)
+
+    any_failed = False
+    for kind in ("test", "lint", "build"):
+        cmd = checks.get(kind)
+        if not cmd:
+            continue
+        try:
+            p = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
+                               timeout=TIMEOUT)
+            out = (p.stdout or "") + (p.stderr or "")
+            rc = p.returncode
+        except subprocess.TimeoutExpired:
+            print(f"{kind}: FAIL timeout after {TIMEOUT}s")
+            any_failed = True
+            continue
+        except FileNotFoundError as exc:
+            print(f"{kind}: FAIL cannot run {cmd[0]} ({exc})")
+            any_failed = True
+            continue
+        if rc == 0:
+            print(f"{kind}: PASS")
+        else:
+            any_failed = True
+            fails = extract_failures(kind, out)
+            if fails:
+                print(f"{kind}: FAIL -> " + "; ".join(fails))
+            else:
+                first = next((l for l in out.splitlines() if l.strip()), "")
+                print(f"{kind}: FAIL -> {first[:160]}")
+    sys.exit(1 if any_failed else 0)
+
+
+if __name__ == "__main__":
+    main()
