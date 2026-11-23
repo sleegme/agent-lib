@@ -41,10 +41,18 @@ One model and one fixture: directional evidence, not a universal saving.
 See [bench/RESULTS.md](bench/RESULTS.md) for task-level exceptions and raw data.
 
 The unused calculator and thin Python subprocess wrapper were removed.
-All five retained commands were actually used in the study. Historical
-calculator measurements remain in `bench/results/` as evidence.
+The study measured the five commands that existed at the time (`ctx`,
+`git-snap`, `log-triage`, `logscan`, `gate-preflight`); all five were
+actually used by the model in the study runs. The newer tools
+(`change-snap`, `pr-snap`, `runtime-snap`, `service-snap`, `test-map-snap`,
+`run-cap`, `git-snap --worktrees`) were added afterwards and are covered by
+the regression suite instead. Historical calculator measurements remain in
+`bench/results/` as evidence.
 
 ## Tests
 
     bash tests/test.sh
-    node --test tests/benchmark.test.mjs
+    node --test tests/
+
+The node command runs every suite in tests/ (`benchmark.test.mjs`,
+`hints.test.mjs`, `hint-pilot.test.mjs`).
